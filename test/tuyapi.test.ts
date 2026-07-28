@@ -283,6 +283,82 @@ describe('reconnect supervision', () => {
     expect(lastWrittenValue['3']).toBe(5);
   });
 
+  it('ignores stale echoes for a datapoint while our own write is in flight or settling, and applies the last COMMAND, not the last echo', async () => {
+    // Reproduces the live bug: dragging RotationSpeed 20->40->60->80->100 makes the
+    // fan echo back speedStep values as it works through queued commands, and an
+    // echo carrying an OLDER value can land after our newer write and overwrite the
+    // optimistic state. HomeKit must end up at the LAST COMMAND (5), never at
+    // whatever stale echo happens to arrive.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    const received: Record<string, unknown>[] = [];
+    d.onDps(dps => received.push(dps));
+
+    const first = d.set({ '3': 2 }); // in flight
+    const second = d.set({ '3': 3 }); // queued, then superseded
+    const third = d.set({ '3': 5 }); // the user's actual final choice
+
+    // Stale echoes of superseded/older values racing in while writes are in flight
+    // or freshly settled must be dropped.
+    handlers['data']?.[0]?.({ dps: { '3': 1 } });
+    handlers['data']?.[0]?.({ dps: { '3': 2 } });
+    handlers['data']?.[0]?.({ dps: { '3': 3 } });
+
+    await Promise.all([first, second, third]);
+
+    handlers['data']?.[0]?.({ dps: { '3': 2 } }); // still stale, still within settle window
+
+    const speedUpdates = received.filter(p => '3' in p).map(p => p['3']);
+    expect(speedUpdates).not.toContain(1);
+    expect(speedUpdates).not.toContain(2);
+    expect(speedUpdates).not.toContain(3);
+    expect(lastWrittenValue['3']).toBe(5);
+
+    // fails if reverted: without suppression every stale echo above lands in
+    // `received`, and the last one ('3': 2) would be what HomeKit is left showing.
+  });
+
+  it('applies an echo immediately for a datapoint with no pending write (physical remote / Smart Life app change)', async () => {
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    const received: Record<string, unknown>[] = [];
+    d.onDps(dps => received.push(dps));
+
+    // Nothing has ever written dp '1' — a wall switch or the Smart Life app flips
+    // it. This must reach HomeKit right away, not be held back.
+    handlers['data']?.[0]?.({ dps: { '1': false } });
+
+    expect(received).toEqual([{ '1': false }]);
+  });
+
+  it('resumes accepting echoes for a datapoint once its settle window has elapsed', async () => {
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    const received: Record<string, unknown>[] = [];
+    d.onDps(dps => received.push(dps));
+
+    await d.set({ '3': 5 });
+
+    // Immediately after settling, a stale echo is still suppressed.
+    handlers['data']?.[0]?.({ dps: { '3': 4 } });
+    expect(received).toHaveLength(0);
+
+    // Once the settle window has fully elapsed, a genuine subsequent change (e.g.
+    // someone at the wall control nudging the speed) must apply normally.
+    await vi.advanceTimersByTimeAsync(1_501);
+    handlers['data']?.[0]?.({ dps: { '3': 4 } });
+    expect(received).toEqual([{ '3': 4 }]);
+  });
+
   it('onDps returns a disposer that detaches the listener', async () => {
     // Nothing replaces an accessory/bridge on a live transport today (discovery runs
     // once), but a subscriber that IS replaced in the future must be able to detach —

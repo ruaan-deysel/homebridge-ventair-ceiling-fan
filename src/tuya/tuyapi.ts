@@ -14,6 +14,16 @@ const BASE_DELAY_MS = 1_000;
 const MAX_DELAY_MS = 60_000;
 /** Bounded so a write's confirming readback fails fast instead of hanging like refresh(). */
 const READBACK_TIMEOUT_MS = 3_000;
+/**
+ * How long, after a write's readback confirms, inbound echoes for that same datapoint
+ * keep being ignored. The fan echoes its state as it works through queued commands
+ * (see the class-level comment on `writeOnce`/`verifyWrite`), so a stale echo carrying
+ * an OLDER value can still arrive just after our own confirmed write — without this
+ * window it would land right after and overwrite the optimistic state HomeKit already
+ * settled on. Short enough that a genuine wall-switch/app change made right after our
+ * write is still picked up quickly.
+ */
+const ECHO_SETTLE_MS = 1_500;
 
 export class TuyapiDevice implements TuyaDevice {
   private readonly device: TuyAPI;
@@ -37,6 +47,15 @@ export class TuyapiDevice implements TuyaDevice {
    * user chose is the one that actually reaches the device.
    */
   private pendingWrite: { dps: Record<string, DpValue>; resolve: () => void; reject: (error: unknown) => void } | null = null;
+
+  /**
+   * Per-datapoint deadline (ms, `Date.now()` scale) until which inbound echoes are
+   * ignored — `Infinity` while a write to that dp is actually in flight (set right
+   * before the wire send, cleared/expired once the readback confirms). A dp absent
+   * from this map has no pending write, so its echoes always apply immediately —
+   * that's how a physical remote or the Smart Life app reaches HomeKit.
+   */
+  private readonly echoSuppressedUntil = new Map<string, number>();
 
   constructor(private readonly opts: TuyapiOptions, private readonly log: Logging) {
     this.device = new TuyAPI({
@@ -83,8 +102,23 @@ export class TuyapiDevice implements TuyaDevice {
     // than our `DpValue`; cast through `unknown` since hardware never sends those.
     const forward = (data: unknown) => {
       const dps = (data as { dps?: Record<string, DpValue> } | undefined)?.dps;
-      if (dps) {
-        this.dpsListeners.forEach(l => l(dps));
+      if (!dps) {
+        return;
+      }
+      // Drop stale echoes for any datapoint that has a write in flight or still
+      // within its post-readback settle window — see `echoSuppressedUntil`. A dp
+      // with no pending write is untouched and applies immediately.
+      const now = Date.now();
+      const filtered: Record<string, DpValue> = {};
+      for (const [dp, value] of Object.entries(dps)) {
+        const until = this.echoSuppressedUntil.get(dp);
+        if (until !== undefined && now < until) {
+          continue;
+        }
+        filtered[dp] = value;
+      }
+      if (Object.keys(filtered).length > 0) {
+        this.dpsListeners.forEach(l => l(filtered));
       }
     };
     this.device.on('data', forward);
@@ -240,8 +274,19 @@ export class TuyapiDevice implements TuyaDevice {
       if (!this.connectedState) {
         throw new Error(`[${this.opts.id}] cannot write: device is disconnected`);
       }
-      await this.device.set({ dps: Number(dp), set: value, shouldWaitForResponse: false });
-      await this.verifyWrite(dp, value);
+      // Suppress echoes for this dp for the whole in-flight duration, not just while
+      // waiting for the readback — an echo racing in between the send and the
+      // readback is just as stale as one arriving during the readback itself.
+      this.echoSuppressedUntil.set(dp, Infinity);
+      try {
+        await this.device.set({ dps: Number(dp), set: value, shouldWaitForResponse: false });
+        await this.verifyWrite(dp, value);
+        this.echoSuppressedUntil.set(dp, Date.now() + ECHO_SETTLE_MS);
+      } catch (error) {
+        // Outcome unknown — do not keep trusting our own state over the device's.
+        this.echoSuppressedUntil.delete(dp);
+        throw error;
+      }
     }
   }
 
