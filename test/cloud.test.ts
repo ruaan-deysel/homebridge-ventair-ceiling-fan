@@ -15,6 +15,10 @@ class FakeRequest extends EventEmitter {
 vi.mock('node:https', () => ({
   default: {
     Agent: class {
+      // Identifies which of the (two) module-level Agent instances a given
+      // https.request() call was actually issued through, for the dual-stack
+      // retry tests below.
+      id = agentCtorArgs.length;
       constructor(opts: unknown) {
         agentCtorArgs.push(opts);
       }
@@ -106,6 +110,34 @@ describe('TuyaCloud transport', () => {
   });
 });
 
+describe('TuyaCloud dual-stack retry (tuya/tuya-homebridge#412)', () => {
+  it('retries on the alternate address family when the preferred one fails to CONNECT', async () => {
+    // First attempt (through the IPv4-preferring agent) fails at the connection level —
+    // not an HTTP error response, an actual transport failure — then the second attempt
+    // must go out through a DIFFERENT agent instance (the IPv6-preferring one) rather
+    // than giving up after a single family.
+    failWith(Object.assign(new Error('connect ECONNREFUSED 192.0.2.1:443'), { code: 'ECONNREFUSED' }));
+    respondWith(200, { success: true, result: { access_token: 'tok' } });
+
+    const cloud = new TuyaCloud(CLIENT_ID, SECRET, 'eu');
+    await expect(cloud.authenticate()).resolves.toBeUndefined();
+
+    expect(requestMock).toHaveBeenCalledTimes(2);
+    const [firstOpts] = requestMock.mock.calls[0] as [{ agent: { id: number } }];
+    const [secondOpts] = requestMock.mock.calls[1] as [{ agent: { id: number } }];
+    expect(firstOpts.agent.id).not.toBe(secondOpts.agent.id);
+  });
+
+  it('surfaces a readable error when BOTH address families fail to connect', async () => {
+    failWith(new Error('connect ECONNREFUSED 192.0.2.1:443'));
+    failWith(new Error('connect ECONNREFUSED 2001:db8::1:443'));
+
+    const cloud = new TuyaCloud(CLIENT_ID, SECRET, 'eu');
+    await expect(cloud.authenticate()).rejects.toThrow(/could not reach the tuya api/i);
+    expect(requestMock).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('TuyaCloud region validation', () => {
   it('rejects an unknown region', () => {
     // @ts-expect-error deliberately invalid region
@@ -142,12 +174,16 @@ describe('TuyaCloud device id validation (SSRF guard)', () => {
 
 describe('TuyaCloud error mapping', () => {
   it('maps a timeout to a readable message without leaking internals', async () => {
+    // A failure retries once on the alternate address family (see the dual-stack retry
+    // describe block above) — queue the timeout twice so both attempts see it.
+    failWith(Object.assign(new Error('internal socket detail'), { name: 'TimeoutError' }));
     failWith(Object.assign(new Error('internal socket detail'), { name: 'TimeoutError' }));
     const cloud = new TuyaCloud(CLIENT_ID, SECRET, 'eu');
     await expect(cloud.authenticate()).rejects.toThrow(/timed out/i);
   });
 
   it('maps a generic network failure to a readable message', async () => {
+    failWith(new Error('ECONNRESET'));
     failWith(new Error('ECONNRESET'));
     const cloud = new TuyaCloud(CLIENT_ID, SECRET, 'eu');
     await expect(cloud.authenticate()).rejects.toThrow(/could not reach the tuya api/i);

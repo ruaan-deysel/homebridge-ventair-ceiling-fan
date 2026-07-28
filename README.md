@@ -22,9 +22,11 @@ Control Ventair Skyfan DC ceiling fans from HomeKit, over your local network.
 | | |
 |---|---|
 | Homebridge | 1.8.0 or later (2.x recommended) |
-| Node.js | 22.10+ or 24 |
+| Node.js | `^22.12.0 \|\| ^24.0.0` |
 
-Version 2.0.0 is ESM-only, which Homebridge v2 requires.
+Version 2.0.0 of this plugin is ESM-only. This is a choice specific to this package,
+not a requirement Homebridge itself imposes — plenty of Homebridge plugins are still
+CommonJS.
 
 ## Installation
 

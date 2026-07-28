@@ -45,7 +45,11 @@ function loadPersist(homebridge: unknown) {
 }
 
 describe('homebridge-ui persist()', () => {
-  it('surfaces an error toast and does not show success when saving rejects', async () => {
+  it('surfaces an error toast, reports failure to the caller, and does not show success when saving rejects', async () => {
+    // This test used to assert `resolves.toBeUndefined()` on a rejected save — i.e. it
+    // encoded the bug (a rejected save silently becoming a resolved, indistinguishable-
+    // from-success persist() call) as the expected behaviour. persist() must instead give
+    // its caller an explicit, checkable failure signal.
     const homebridge = {
       getPluginConfig: vi.fn().mockRejectedValue(new Error('IPC channel closed')),
       updatePluginConfig: vi.fn(),
@@ -54,13 +58,13 @@ describe('homebridge-ui persist()', () => {
     };
     const persist = loadPersist(homebridge);
 
-    await expect(persist('Saved')).resolves.toBeUndefined();
+    await expect(persist('Saved')).resolves.toBe(false);
 
     expect(homebridge.toast.error).toHaveBeenCalledWith('IPC channel closed', 'Save failed');
     expect(homebridge.toast.success).not.toHaveBeenCalled();
   });
 
-  it('shows success and no error when saving succeeds', async () => {
+  it('shows success and no error, and reports success to the caller, when saving succeeds', async () => {
     const homebridge = {
       getPluginConfig: vi.fn().mockResolvedValue([{ platform: 'x' }]),
       updatePluginConfig: vi.fn().mockResolvedValue(undefined),
@@ -69,9 +73,30 @@ describe('homebridge-ui persist()', () => {
     };
     const persist = loadPersist(homebridge);
 
-    await persist('Saved');
+    await expect(persist('Saved')).resolves.toBe(true);
 
     expect(homebridge.toast.success).toHaveBeenCalledWith('Saved');
     expect(homebridge.toast.error).not.toHaveBeenCalled();
+  });
+
+  it('re-syncs to the last actually-saved config on a rejected save, so a caller that reloads does not keep showing the unsaved mutation', async () => {
+    const savedConfig = [{ platform: 'x', name: 'Real Saved Name', devices: [] }];
+    const homebridge = {
+      getPluginConfig: vi.fn()
+        .mockResolvedValueOnce(savedConfig) // initial read inside the first persist() attempt
+        .mockResolvedValue(savedConfig), // the reload after the failed save, below
+      updatePluginConfig: vi.fn().mockResolvedValue(undefined),
+      savePluginConfig: vi.fn().mockRejectedValue(new Error('disk full')),
+      toast: { success: vi.fn(), error: vi.fn() },
+    };
+    const persist = loadPersist(homebridge);
+
+    const ok = await persist('Saved');
+
+    expect(ok).toBe(false);
+    // getPluginConfig() was called a second time to reload the real, on-disk config
+    // after the save failed — proof the caller's optimistic in-memory mutation gets
+    // discarded rather than rendered as if it had been saved.
+    expect(homebridge.getPluginConfig).toHaveBeenCalledTimes(2);
   });
 });

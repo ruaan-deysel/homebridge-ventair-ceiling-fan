@@ -229,6 +229,31 @@ describe('Matter', () => {
     expect(removed).toEqual([staleMatter]);
   });
 
+  it('preserves a cached Matter accessory when its setup fails this run, instead of treating it as removed from config', async () => {
+    // Regression guard: the desired-Matter-UUID set used for stale cleanup must be
+    // computed from valid CONFIG alone, before any setup is attempted — never from
+    // "which devices' registerMatter() happened to succeed this run". A transient
+    // failure (bridge not ready yet, one-off startup race, ...) on a still-configured,
+    // already-cached Matter fan must not make removeStaleMatterAccessories() treat its
+    // cached UUID as stale and unregister it — that destroys the user's cached Matter
+    // endpoint state over what is often just a one-off error.
+    const { log, api, handlers, matter } = matterHarness();
+    const matterDevice = { ...device, exposeMatter: true };
+    matter.registerPlatformAccessories.mockRejectedValueOnce(new Error('bridge not ready'));
+
+    const platform = new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [matterDevice] } as never, api as never);
+    const cachedFromDisk = { UUID: matterUuid(matterDevice.id), displayName: 'Cached Fan (restored from disk)' };
+    platform.configureMatterAccessory(cachedFromDisk as never);
+
+    await handlers.didFinishLaunching?.();
+    await vi.waitFor(() => expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Setup failed'), expect.anything()));
+
+    // The cached accessory must never have been classified as stale over a transient
+    // setup failure — removeStaleMatterAccessories() must not even reach the point of
+    // calling unregisterPlatformAccessories for it.
+    expect(matter.unregisterPlatformAccessories).not.toHaveBeenCalled();
+  });
+
   it('catches and logs a rejected Matter unregister instead of an unhandled rejection', async () => {
     const { log, api, handlers, matter } = matterHarness();
     matter.unregisterPlatformAccessories.mockRejectedValue(new Error('bridge unreachable'));

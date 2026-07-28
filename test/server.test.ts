@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fetchKeys } from '../homebridge-ui/server.js';
+import { fetchKeys, validateKeysRequest } from '../homebridge-ui/server.js';
 
 function fakeCloud(byId: Record<string, unknown>) {
   return {
@@ -27,10 +27,44 @@ describe('/keys fetchKeys()', () => {
     expect(failed).toEqual([{ id: 'bad', message: 'Tuya API error: device not found' }]);
   });
 
-  it('never lets a raw error object without .message leak an unhelpful value', async () => {
+  it('never lets a raw error object without .message leak an unhelpful blank value', async () => {
+    // `.message` is `''` here — not null/undefined — so a `??` fallback (which only
+    // triggers on nullish values) lets it straight through and renders a blank error
+    // in the UI. Only `typeof failed[0].message === 'string'` was asserted before,
+    // which an empty string also satisfies — this rewrite pins the actual, non-blank
+    // fallback value so a regression to `??` fails this test.
     const cloud = fakeCloud({ id1: Object.assign(new Error(), { message: '' }) });
     const { failed } = await fetchKeys(cloud, ['id1']);
     expect(failed[0].id).toBe('id1');
-    expect(typeof failed[0].message).toBe('string');
+    expect(failed[0].message).toBe('Unknown error');
+  });
+});
+
+describe('/keys validateKeysRequest()', () => {
+  // A malformed payload must never reach TuyaCloud (which starts signing/authenticating
+  // requests) at all — every case below must throw before any network call is possible.
+  it('accepts a well-formed payload', () => {
+    expect(() => validateKeysRequest({ clientId: 'id', secret: 'sec', ids: ['a'] })).not.toThrow();
+  });
+
+  it('rejects a missing/empty clientId', () => {
+    expect(() => validateKeysRequest({ clientId: '', secret: 'sec', ids: ['a'] })).toThrow(/clientId/);
+    expect(() => validateKeysRequest({ secret: 'sec', ids: ['a'] })).toThrow(/clientId/);
+  });
+
+  it('rejects a non-string clientId or secret', () => {
+    expect(() => validateKeysRequest({ clientId: 123, secret: 'sec', ids: ['a'] })).toThrow(/clientId/);
+    expect(() => validateKeysRequest({ clientId: 'id', secret: 123, ids: ['a'] })).toThrow(/secret/);
+  });
+
+  it('rejects a missing/empty secret', () => {
+    expect(() => validateKeysRequest({ clientId: 'id', secret: '', ids: ['a'] })).toThrow(/secret/);
+  });
+
+  it('rejects ids that is missing, empty, not an array, or contains a non-string', () => {
+    expect(() => validateKeysRequest({ clientId: 'id', secret: 'sec' })).toThrow(/ids/);
+    expect(() => validateKeysRequest({ clientId: 'id', secret: 'sec', ids: [] })).toThrow(/ids/);
+    expect(() => validateKeysRequest({ clientId: 'id', secret: 'sec', ids: 'a' })).toThrow(/ids/);
+    expect(() => validateKeysRequest({ clientId: 'id', secret: 'sec', ids: ['a', 123] })).toThrow(/ids/);
   });
 });

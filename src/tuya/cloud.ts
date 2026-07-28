@@ -61,32 +61,46 @@ const REQUEST_TIMEOUT_MS = 10_000;
  * all addresses and explicitly prefers an IPv4 one when present, while still
  * falling back to IPv6 on an IPv6-only host — so neither ordering luck nor
  * IPv6-only breakage decides the outcome.
+ *
+ * A single preferred-family lookup only picks the address ONCE though — if that one
+ * address is reachable by DNS but refuses the TCP connection (routing black hole,
+ * firewall, a dual-stack host whose IPv4 path is broken specifically), there was no
+ * way back to the other family and the whole request failed outright. `AGENT` (IPv4
+ * preferred) and `FALLBACK_AGENT` (IPv6 preferred) below are used one after the other
+ * by `request()` so a CONNECT failure on the preferred family gets exactly one retry
+ * on the alternate family before giving up, without losing the IPv4-first preference
+ * or the IPv6-only fallback on the normal, non-retry path.
  */
-const AGENT = new https.Agent({ autoSelectFamily: false, keepAlive: true, lookup: preferIPv4 });
+const AGENT = new https.Agent({ autoSelectFamily: false, keepAlive: true, lookup: makeLookup(4) });
+const FALLBACK_AGENT = new https.Agent({ autoSelectFamily: false, keepAlive: true, lookup: makeLookup(6) });
 
 /**
- * Resolves `hostname` and prefers an IPv4 address when one exists, falling back
- * to IPv6 when it's the only family available. See the `AGENT` comment above —
+ * Resolves `hostname` and prefers an address of `preferredFamily` when one exists,
+ * falling back to whatever else is available (e.g. IPv6 on an IPv4-preferring lookup
+ * used against an IPv6-only host). See the `AGENT`/`FALLBACK_AGENT` comment above —
  * tuya/tuya-homebridge#412.
  */
-function preferIPv4(
-  hostname: string,
-  options: dns.LookupOptions,
-  callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
-): void {
-  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
-    if (err) {
-      callback(err, '', 0);
-      return;
-    }
-    const list = addresses as dns.LookupAddress[];
-    if (list.length === 0) {
-      callback(Object.assign(new Error(`No addresses found for ${hostname}`), { code: 'ENOTFOUND' }), '', 0);
-      return;
-    }
-    const chosen = [...list].sort((a, b) => a.family - b.family)[0];
-    callback(null, chosen.address, chosen.family);
-  });
+function makeLookup(preferredFamily: 4 | 6) {
+  return (
+    hostname: string,
+    options: dns.LookupOptions,
+    callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
+  ): void => {
+    dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+      if (err) {
+        callback(err, '', 0);
+        return;
+      }
+      const list = addresses as dns.LookupAddress[];
+      if (list.length === 0) {
+        callback(Object.assign(new Error(`No addresses found for ${hostname}`), { code: 'ENOTFOUND' }), '', 0);
+        return;
+      }
+      const preferred = list.find(a => a.family === preferredFamily);
+      const chosen = preferred ?? [...list].sort((a, b) => a.family - b.family)[0];
+      callback(null, chosen.address, chosen.family);
+    });
+  };
 }
 
 interface TuyaResponseBody<T> {
@@ -128,24 +142,36 @@ export class TuyaCloud {
       ? this.clientId + this.token + t + nonce + stringToSign
       : this.clientId + t + nonce + stringToSign;
 
+    const headers = {
+      client_id: this.clientId,
+      sign: this.sign(payload),
+      t,
+      nonce,
+      sign_method: 'HMAC-SHA256',
+      ...(this.token ? { access_token: this.token } : {}),
+    };
+
     let statusCode: number | undefined;
     let raw: string;
     try {
-      ({ statusCode, body: raw } = await this.request(path, {
-        client_id: this.clientId,
-        sign: this.sign(payload),
-        t,
-        nonce,
-        sign_method: 'HMAC-SHA256',
-        ...(this.token ? { access_token: this.token } : {}),
-      }));
-    } catch (error) {
-      // Never let a raw error (which may embed request internals) bubble up — surface
-      // only whether it was a timeout or some other network failure.
-      if (error instanceof Error && error.name === 'TimeoutError') {
-        throw new Error('Tuya API request timed out', { cause: error });
+      ({ statusCode, body: raw } = await this.request(path, headers, AGENT));
+    } catch {
+      // The preferred-family address resolved fine but the CONNECT itself failed
+      // (routing black hole, broken IPv4 path on an otherwise-fine dual-stack host,
+      // etc.) — retry once against the alternate address family rather than failing
+      // outright. See the AGENT/FALLBACK_AGENT comment above.
+      try {
+        ({ statusCode, body: raw } = await this.request(path, headers, FALLBACK_AGENT));
+      } catch (secondError) {
+        // Never let a raw error (which may embed request internals) bubble up — surface
+        // only whether it was a timeout or some other network failure. The first
+        // attempt's error is discarded deliberately — it's a same-class connection
+        // failure and the retry's own error is the one that matters to the caller.
+        if (secondError instanceof Error && secondError.name === 'TimeoutError') {
+          throw new Error('Tuya API request timed out', { cause: secondError });
+        }
+        throw new Error('Could not reach the Tuya API — check your network connection', { cause: secondError });
       }
-      throw new Error('Could not reach the Tuya API — check your network connection', { cause: error });
     }
 
     let body: TuyaResponseBody<T>;
@@ -165,10 +191,14 @@ export class TuyaCloud {
     return body.result;
   }
 
-  private request(path: string, headers: Record<string, string>): Promise<{ statusCode?: number; body: string }> {
+  private request(
+    path: string,
+    headers: Record<string, string>,
+    agent: https.Agent,
+  ): Promise<{ statusCode?: number; body: string }> {
     return new Promise((resolve, reject) => {
       const req = https.request(
-        { hostname: this.host, path, method: 'GET', headers, agent: AGENT, timeout: REQUEST_TIMEOUT_MS },
+        { hostname: this.host, path, method: 'GET', headers, agent, timeout: REQUEST_TIMEOUT_MS },
         res => {
           const chunks: Buffer[] = [];
           res.on('data', chunk => chunks.push(chunk as Buffer));

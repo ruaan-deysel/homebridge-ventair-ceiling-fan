@@ -2,7 +2,7 @@ import type { API, Characteristic, DynamicPlatformPlugin, Logging, MatterAccesso
 
 import { CeilingFanAccessory } from './accessory.js';
 import { parseDevices, type VentairDevice } from './config.js';
-import { MatterFanBridge } from './matter.js';
+import { MatterFanBridge, matterUuid } from './matter.js';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
 import { discover } from './tuya/discovery.js';
 import { TuyapiDevice } from './tuya/tuyapi.js';
@@ -14,7 +14,6 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
   public readonly accessories: Map<string, PlatformAccessory> = new Map();
   public readonly matterAccessories: Map<string, MatterAccessory> = new Map();
   private readonly discoveredCacheUUIDs: string[] = [];
-  private readonly discoveredMatterUUIDs: string[] = [];
   private readonly devices: VentairDevice[];
 
   constructor(
@@ -48,10 +47,21 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
   }
 
   async discoverDevices(): Promise<void> {
+    // Computed from valid configuration BEFORE any setup is attempted — never from
+    // "which UUIDs made it through registerMatter() successfully". A Matter UUID that
+    // enters this set is preserved by removeStaleMatterAccessories() below even if this
+    // device's setup rejects (transient API-readiness hiccup, startup race, etc.). The
+    // previous version only recorded a UUID as discovered AFTER registerMatter()
+    // succeeded, so a transient failure on a configured, cached Matter fan fell through
+    // to the "not discovered this run" bucket and removeStaleMatterAccessories()
+    // permanently unregistered it — destroying the user's cached Matter endpoint state
+    // for what was often just a one-off startup error.
+    const desiredMatterUUIDs = this.devices.filter(d => d.exposeMatter).map(d => matterUuid(d.id));
+
     // No discovery/connection attempt when nothing is configured, but stale cleanup
     // below must still run — otherwise clearing `devices` leaves dead tiles in HomeKit
-    // forever, since discoveredCacheUUIDs/discoveredMatterUUIDs stay empty and every
-    // previously-cached accessory looks "stale" but is never actually removed.
+    // forever, since discoveredCacheUUIDs stays empty and every previously-cached
+    // accessory looks "stale" but is never actually removed.
     if (this.devices.length > 0) {
       // A discovery failure must not abort setup for devices with a static `ip` — same
       // per-device containment policy as parseDevices() and the setupDevice() try/catch below.
@@ -78,7 +88,7 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
     }
 
     this.removeStaleAccessories();
-    await this.removeStaleMatterAccessories();
+    await this.removeStaleMatterAccessories(desiredMatterUUIDs);
   }
 
   private async setupDevice(device: VentairDevice, uuid: string, addresses: Map<string, string>): Promise<void> {
@@ -141,7 +151,6 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
     this.log.info('Registering Matter fan:', device.name);
     await this.api.matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
     this.matterAccessories.set(bridge.uuid, accessory);
-    this.discoveredMatterUUIDs.push(bridge.uuid);
   }
 
   /** Only run discovery if at least one device is missing an explicit address. */
@@ -175,13 +184,18 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
     this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
   }
 
-  /** Same as `removeStaleAccessories`, for devices that had Matter turned off or removed. */
-  private async removeStaleMatterAccessories(): Promise<void> {
+  /**
+   * Same as `removeStaleAccessories`, for devices that had Matter turned off or removed.
+   * `desiredMatterUUIDs` is computed by the caller from valid configuration alone — not
+   * from which devices' setup happened to succeed this run — so a transient setup
+   * failure on a still-configured Matter fan can never look "stale" here.
+   */
+  private async removeStaleMatterAccessories(desiredMatterUUIDs: string[]): Promise<void> {
     if (!this.api.isMatterEnabled() || !this.api.matter) {
       return;
     }
     const stale = [...this.matterAccessories.entries()]
-      .filter(([uuid]) => !this.discoveredMatterUUIDs.includes(uuid))
+      .filter(([uuid]) => !desiredMatterUUIDs.includes(uuid))
       .map(([, accessory]) => accessory);
 
     if (stale.length === 0) {

@@ -14,6 +14,25 @@ import { TuyaCloud } from '../dist/tuya/cloud.js';
  * TuyaCloud's own thrown message (Tuya's body.msg / a network-class description) —
  * never the raw error object — so the Access ID/Secret can never leak into it.
  */
+/**
+ * Validates the `/keys` request payload's shape BEFORE a `TuyaCloud` instance is ever
+ * constructed (which starts signing/authenticating requests) — a malformed request must
+ * never reach the network layer at all. Pulled out of the handler for the same reason as
+ * `fetchKeys` above: testable without booting the IPC-bound `HomebridgePluginUiServer`.
+ * Throws `RequestError`; returns nothing on success.
+ */
+export function validateKeysRequest({ clientId, secret, ids }) {
+  if (typeof clientId !== 'string' || !clientId) {
+    throw new RequestError('clientId must be a non-empty string');
+  }
+  if (typeof secret !== 'string' || !secret) {
+    throw new RequestError('secret must be a non-empty string');
+  }
+  if (!Array.isArray(ids) || ids.length === 0 || !ids.every(id => typeof id === 'string')) {
+    throw new RequestError('ids must be a non-empty array of strings');
+  }
+}
+
 export async function fetchKeys(cloud, ids) {
   const results = await Promise.allSettled(ids.map(id => cloud.getDevice(id)));
   const devices = [];
@@ -22,7 +41,10 @@ export async function fetchKeys(cloud, ids) {
     if (result.status === 'fulfilled') {
       devices.push(result.value);
     } else {
-      failed.push({ id: ids[i], message: result.reason?.message ?? 'Unknown error' });
+      // `||`, not `??`: an empty-string `.message` (e.g. `new Error()` with no message
+      // set) is not nullish, so `??` let it straight through and rendered a blank error
+      // in the UI. Anything falsy — missing, undefined, or empty — falls back here.
+      failed.push({ id: ids[i], message: result.reason?.message || 'Unknown error' });
     }
   });
   return { devices, failed };
@@ -44,9 +66,7 @@ class VentairUiServer extends HomebridgePluginUiServer {
 
     // Credentials arrive per-request and are never stored anywhere.
     this.onRequest('/keys', async ({ clientId, secret, region, ids }) => {
-      if (!clientId || !secret) {
-        throw new RequestError('Access ID and Secret are required');
-      }
+      validateKeysRequest({ clientId, secret, ids });
       let cloud;
       try {
         cloud = new TuyaCloud(clientId, secret, region ?? 'eu');

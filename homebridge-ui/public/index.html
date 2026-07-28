@@ -73,6 +73,11 @@
       return node;
     }
 
+    // Returns true only once the save is actually confirmed by Homebridge — every caller
+    // that mutates `platform`/`device` before calling this MUST check the return value.
+    // A rejected save used to be swallowed here (toast shown, but the function still
+    // resolved normally), so callers went on to report success and render the optimistic,
+    // never-actually-saved mutation as if it were live.
     async function persist(message) {
       setBusy(true);
       try {
@@ -81,8 +86,21 @@
         await homebridge.updatePluginConfig([platform, ...rest]);
         await homebridge.savePluginConfig();
         homebridge.toast.success(message || 'Saved');
+        return true;
       } catch (e) {
         homebridge.toast.error(e.message || 'Could not save your change', 'Save failed');
+        // Re-sync `platform` to whatever was last actually saved, so the caller's
+        // optimistic (now-known-unsaved) mutation doesn't keep diverging from reality —
+        // the caller is expected to renderAll() after a failed persist() to reflect this.
+        try {
+          const reloaded = await homebridge.getPluginConfig();
+          platform = reloaded[0] ?? platform;
+          platform.devices = platform.devices || [];
+        } catch {
+          // Nothing better to fall back to — the in-memory object stays as-is, but the
+          // `false` return below still guarantees no caller reports success.
+        }
+        return false;
       } finally {
         setBusy(false);
       }
@@ -110,7 +128,10 @@
         type: 'checkbox',
         onchange: async e => {
           device[prop] = e.target.checked;
-          await persist();
+          // On a failed save, persist() has already reloaded `platform` to what's
+          // actually on disk — re-render so this toggle doesn't keep showing the
+          // unsaved, optimistic value.
+          if (!(await persist())) { renderAll(); }
         },
       });
       input.checked = Boolean(device[prop]);
@@ -123,7 +144,7 @@
         value: device.name,
         onchange: async e => {
           device.name = e.target.value;
-          await persist();
+          if (!(await persist())) { renderAll(); }
         },
       });
       nameInput.value = device.name;
@@ -134,7 +155,7 @@
         onchange: async e => {
           const value = e.target.value.trim();
           if (value) { device.ip = value; } else { delete device.ip; }
-          await persist();
+          if (!(await persist())) { renderAll(); }
         },
       });
       ipInput.value = device.ip || '';
@@ -298,10 +319,16 @@
             updated += 1;
           }
         }
+        let saved = true;
         if (updated > 0) {
-          await persist();
+          saved = await persist();
         }
-        if (failed.length > 0) {
+        if (!saved) {
+          // persist() already toasted the save failure and reloaded `platform` to what's
+          // actually on disk — the fetched keys above never made it there, so no success
+          // message here, and renderAll() below must reflect the reloaded (unsaved) state.
+          status.textContent = 'Could not save the fetched key(s).';
+        } else if (failed.length > 0) {
           const names = failed.map(f => {
             const known = platform.devices.find(d => d.id === f.id);
             return `${known ? known.name : f.id}: ${f.message}`;

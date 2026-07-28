@@ -4,7 +4,20 @@ const connect = vi.fn();
 const find = vi.fn();
 const disconnect = vi.fn();
 const refresh = vi.fn();
-const set = vi.fn().mockResolvedValue({ dps: {} });
+// Tracks the last value written per dp so the mocked `get()` readback below can echo
+// it back — mirrors what real hardware does on a successful write, so tests that
+// don't care about the readback confirmation don't have to fake it out individually.
+const lastWrittenValue: Record<string, unknown> = {};
+const set = vi.fn().mockImplementation(async (opts: { dps: number; set: unknown }) => {
+  lastWrittenValue[String(opts.dps)] = opts.set;
+  return { dps: {} };
+});
+const get = vi.fn().mockImplementation(async (opts?: { dps?: number; schema?: boolean }) => {
+  if (opts?.dps !== undefined) {
+    return lastWrittenValue[String(opts.dps)];
+  }
+  return { dps: {} };
+});
 const handlers: Record<string, ((...a: unknown[]) => void)[]> = {};
 
 vi.mock('tuyapi', () => ({
@@ -14,7 +27,7 @@ vi.mock('tuyapi', () => ({
     disconnect = disconnect;
     refresh = refresh;
     isConnected = () => false;
-    get = vi.fn().mockResolvedValue({ dps: {} });
+    get = get;
     set = set;
     on(event: string, fn: (...a: unknown[]) => void) {
       (handlers[event] ??= []).push(fn);
@@ -39,7 +52,19 @@ beforeEach(() => {
   find.mockReset().mockResolvedValue(true);
   disconnect.mockReset();
   refresh.mockReset();
-  set.mockReset().mockResolvedValue({ dps: {} });
+  Object.keys(lastWrittenValue).forEach(k => delete lastWrittenValue[k]);
+  set.mockClear();
+  set.mockImplementation(async (opts: { dps: number; set: unknown }) => {
+    lastWrittenValue[String(opts.dps)] = opts.set;
+    return { dps: {} };
+  });
+  get.mockClear();
+  get.mockImplementation(async (opts?: { dps?: number; schema?: boolean }) => {
+    if (opts?.dps !== undefined) {
+      return lastWrittenValue[String(opts.dps)];
+    }
+    return { dps: {} };
+  });
   Object.values(log).forEach(m => m.mockReset());
 });
 
@@ -162,5 +187,58 @@ describe('reconnect supervision', () => {
     expect(d.connected).toBe(false);
     await expect(d.set({ '1': true })).rejects.toThrow(/disconnected/i);
     expect(set).not.toHaveBeenCalled();
+  });
+
+  it('rejects the whole patch when the device disconnects between two datapoints', async () => {
+    // The connectivity guard used to run once, before the loop — a disconnect that
+    // happened *between* two sequential datapoint writes (now genuinely possible:
+    // writes are sequential single-DP calls) sailed straight through undetected, and
+    // the second datapoint was sent over a connection that was already gone.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    set.mockImplementationOnce(async (o: { dps: number; set: unknown }) => {
+      lastWrittenValue[String(o.dps)] = o.set;
+      // Socket dies right after the first datapoint's send completes, before the
+      // second datapoint is ever attempted.
+      fire('disconnected');
+      return { dps: {} };
+    });
+
+    await expect(d.set({ '1': true, '3': 5 })).rejects.toThrow(/disconnected/i);
+    // The second datapoint must never have been sent over the dead connection.
+    expect(set).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a write when the confirming readback cannot be completed', async () => {
+    // set() with shouldWaitForResponse: false always resolves regardless of whether
+    // the datapoint actually reached the device. Without a readback, a send failure
+    // between the guard and the wire (e.g. the socket dying mid-send) resolved as
+    // success. This is the regression guard for the readback itself existing at all.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    get.mockImplementationOnce(async () => {
+      throw new Error('read failed');
+    });
+
+    await expect(d.set({ '1': true })).rejects.toThrow(/could not be confirmed/i);
+  });
+
+  it('rejects a write the device silently ignored (readback reports a different value)', async () => {
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    // Device still reports the old value even though set() itself resolved —
+    // exactly what a firmware quirk / lost datapoint looks like on the wire.
+    get.mockImplementationOnce(async () => false);
+
+    await expect(d.set({ '1': true })).rejects.toThrow(/was not applied/i);
   });
 });

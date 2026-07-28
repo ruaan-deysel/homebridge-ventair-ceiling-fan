@@ -44,13 +44,13 @@ function fanModeForStep(matterApi: MatterAPI, step: number): number {
 }
 
 export interface MatterFanCallbacks {
-  setPower(on: boolean): void;
-  setPercent(percent: number): void;
+  setPower(on: boolean): Promise<void>;
+  setPercent(percent: number): Promise<void>;
 }
 
 const noopCallbacks: MatterFanCallbacks = {
-  setPower: () => {},
-  setPercent: () => {},
+  setPower: async () => {},
+  setPercent: async () => {},
 };
 
 /**
@@ -121,6 +121,14 @@ export function buildMatterAccessory(
     serialNumber: device.id,
     context: {},
     clusters: matterClusters(matterApi, state),
+    // Every handler here returns the callback's promise (never fire-and-forget). Homebridge's
+    // Matter behaviors (e.g. HomebridgeOnOffServer.on(): `await registry.executeHandler(...)`
+    // in node_modules/homebridge/dist/matter/behaviors/OnOffBehavior.js) await whatever this
+    // handler returns before deciding whether to commit cluster state — a handler that returns
+    // undefined makes that await resolve instantly, so Homebridge always committed the
+    // requested state even when the underlying write to the fan failed or was still offline.
+    // Returning the promise, combined with write() rethrowing after rollback (see below), lets
+    // a failed write surface as a genuine Matter command failure instead of a silent success.
     handlers: {
       onOff: {
         on: () => callbacks.setPower(true),
@@ -129,8 +137,9 @@ export function buildMatterAccessory(
       fanControl: {
         percentSettingChange: ({ percentSetting }) => {
           if (percentSetting !== null && percentSetting !== undefined) {
-            callbacks.setPercent(percentSetting);
+            return callbacks.setPercent(percentSetting);
           }
+          return undefined;
         },
         // Non-Off modes must drive a speed, not just power — a Matter controller setting
         // fanMode to Low/Medium/High otherwise has no way to select speed. Mirrors the
@@ -138,15 +147,13 @@ export function buildMatterAccessory(
         fanModeChange: ({ fanMode }) => {
           const mode = matterApi.types?.FanControl?.FanMode ?? FALLBACK_FAN_MODE;
           if (fanMode === mode.Off) {
-            callbacks.setPower(false);
-            return;
+            return callbacks.setPower(false);
           }
           const step = fanMode === mode.Low ? 1 : fanMode === mode.Medium ? 3 : fanMode === mode.High ? 5 : undefined;
           if (step === undefined) {
-            callbacks.setPower(true);
-            return;
+            return callbacks.setPower(true);
           }
-          callbacks.setPercent(stepToPercent(step));
+          return callbacks.setPercent(stepToPercent(step));
         },
       },
     },
@@ -175,15 +182,16 @@ export class MatterFanBridge {
   private readonly dpsOptions = { brightnessScale: DEFAULT_BRIGHTNESS_SCALE };
 
   private readonly callbacks: MatterFanCallbacks = {
+    // Both callbacks return write()'s promise (not fire-and-forget with `void`) — see the
+    // comment on buildMatterAccessory()'s `handlers` for why that's required for Homebridge
+    // to notice a failed write at all.
     setPower: on => {
       const speedStep = on && this.state.speedStep === 0 ? 1 : this.state.speedStep;
-      // write() catches all transport errors internally and always resolves — see its
-      // own try/catch below. No .catch() needed here.
-      void this.write(on ? { power: true, speedStep } : { power: false });
+      return this.write(on ? { power: true, speedStep } : { power: false });
     },
     setPercent: percent => {
       const step = percentToStep(percent);
-      void this.write(step === 0 ? { power: false } : { power: true, speedStep: step });
+      return this.write(step === 0 ? { power: false } : { power: true, speedStep: step });
     },
   };
 
@@ -218,6 +226,14 @@ export class MatterFanBridge {
     } catch (error) {
       Object.assign(this.state, previous);
       this.log.warn(`[${this.device.name}] Matter write failed:`, error instanceof Error ? error.message : error);
+      // Push the rolled-back state so Matter's local cache doesn't show the optimistic
+      // patch that never actually reached the fan, then rethrow: the caller (the handler
+      // returned to Homebridge in buildMatterAccessory()) must propagate this so
+      // Homebridge's Matter behavior sees the failure and does not commit cluster state
+      // that the device never received. Silently swallowing it here is exactly what let
+      // an offline command still get a Matter success response.
+      await this.pushState();
+      throw error;
     }
     await this.pushState();
   }

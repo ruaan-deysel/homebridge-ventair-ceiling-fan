@@ -12,6 +12,8 @@ export interface TuyapiOptions {
 
 const BASE_DELAY_MS = 1_000;
 const MAX_DELAY_MS = 60_000;
+/** Bounded so a write's confirming readback fails fast instead of hanging like refresh(). */
+const READBACK_TIMEOUT_MS = 3_000;
 
 export class TuyapiDevice implements TuyaDevice {
   private readonly device: TuyAPI;
@@ -145,31 +147,73 @@ export class TuyapiDevice implements TuyaDevice {
   }
 
   /**
-   * One `set()` call per datapoint, sequentially.
+   * One `set()` call per datapoint, sequentially, each followed by a bounded readback
+   * to confirm the device actually applied it.
    *
    * Measured on real Ventair Skyfan DC hardware: `set({ multiple: true, data })`
    * is accepted with no error but silently has NO EFFECT on this firmware — do
    * not "optimise" this back into a batched write. Sequential because there is
    * one TCP connection per device; concurrent writes on it are not worth the risk.
    *
-   * `shouldWaitForResponse: false` (deliberate, see below) means tuyapi's own
-   * `set()` promise ALWAYS resolves, even when the underlying `_send()` fails —
-   * tuyapi only rejects on a failed send when it's the one waiting for a reply.
-   * Without a guard here that swallows every offline write instead of surfacing
-   * it, silently leaving HomeKit/Matter showing a state the device never
-   * reached. Guarding on `connected` catches the dominant real failure (device
-   * unreachable) cheaply, without touching tuyapi's send path or serialisation.
+   * `shouldWaitForResponse: false` (deliberate) means tuyapi's own `set()` promise
+   * ALWAYS resolves, even when the underlying `_send()` fails — tuyapi only rejects
+   * on a failed send when it's the one waiting for a reply (verified against
+   * `node_modules/tuyapi/index.js` ~408-441: with `shouldWaitForResponse: false` the
+   * executor calls `resolve()` synchronously and only *conditionally* rejects from
+   * the `_send().catch()`, guarded by `options.shouldWaitForResponse`). So `set()`
+   * resolving is NOT proof the datapoint reached the device — a socket lost after
+   * the top-of-call connectivity guard, or a failure between two sequential
+   * datapoints, both resolve as "success" with no readback. The connectivity guard
+   * alone (checked once, only before the loop) cannot catch either case.
    *
-   * Not switching to `shouldWaitForResponse: true`: it changes latency across
-   * eight devices and tuyapi throws "A set command is already in progress" if a
-   * second waiting set overlaps — a bigger, riskier change than this bug needs.
+   * The fix: after every datapoint write, re-check connectivity (a disconnect during
+   * the previous datapoint must abort the rest of the patch — no partial writes
+   * reported as full success) and read the datapoint back with `get({ dps })` —
+   * never `refresh()`, which hangs 20s on this firmware, see the class-level
+   * comment above. `get()` uses a different tuyapi request (DP_QUERY) than the
+   * `_setQueue`-gated `set({ shouldWaitForResponse: true })` path, so it does not
+   * risk the "A set command is already in progress" error that ruled out just
+   * flipping `shouldWaitForResponse` to `true`.
+   *
+   * Latency tradeoff: this roughly doubles the round-trip cost of every write (one
+   * send + one confirming read, per datapoint, times up to 8 fans sharing one
+   * process) instead of the previous single fire-and-forget send. `READBACK_TIMEOUT_MS`
+   * bounds the worst case tightly (3s) specifically so a device that goes dark
+   * mid-write fails fast instead of hanging like `refresh()` does — pragmatic for
+   * responsiveness, at the cost of every successful write now taking one extra
+   * round trip.
    */
   async set(dps: Record<string, DpValue>): Promise<void> {
-    if (!this.connectedState) {
-      throw new Error(`[${this.opts.id}] cannot write: device is disconnected`);
-    }
     for (const [dp, value] of Object.entries(dps)) {
+      if (!this.connectedState) {
+        throw new Error(`[${this.opts.id}] cannot write: device is disconnected`);
+      }
       await this.device.set({ dps: Number(dp), set: value, shouldWaitForResponse: false });
+      await this.verifyWrite(dp, value);
+    }
+  }
+
+  /**
+   * Bounded readback confirming a single datapoint write actually landed. Rejects on
+   * disconnect, timeout, or a value mismatch — any of which means the fan must not be
+   * treated as having received this datapoint.
+   */
+  private async verifyWrite(dp: string, expected: DpValue): Promise<void> {
+    if (!this.connectedState) {
+      throw new Error(`[${this.opts.id}] write to dp ${dp} could not be confirmed: device disconnected`);
+    }
+    let actual: unknown;
+    try {
+      actual = await withTimeout(
+        this.device.get({ dps: Number(dp) }) as Promise<unknown>,
+        READBACK_TIMEOUT_MS,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`[${this.opts.id}] write to dp ${dp} could not be confirmed: ${message}`, { cause: error });
+    }
+    if (actual !== expected) {
+      throw new Error(`[${this.opts.id}] write to dp ${dp} was not applied (device reports ${JSON.stringify(actual)})`);
     }
   }
 
@@ -197,4 +241,21 @@ export class TuyapiDevice implements TuyaDevice {
 /** Spread retries so eight fans reconnecting after a network blip don't sync up. */
 function jitter(delay: number): number {
   return delay * (0.5 + Math.random() / 2);
+}
+
+/** Rejects if `promise` doesn't settle within `ms` — never lets a readback hang. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+    promise.then(
+      value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      error => {
+        clearTimeout(timer);
+        reject(error as Error);
+      },
+    );
+  });
 }

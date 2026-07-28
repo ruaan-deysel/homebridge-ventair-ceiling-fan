@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildMatterAccessory, matterUuid, MatterFanBridge } from '../src/matter.js';
 import { FakeTuyaDevice } from '../src/tuya/device.js';
+// A relative file-path import bypasses `homebridge`'s package.json `exports` restriction
+// (which only exposes `./dist/index.js`) so this pulls in the REAL registry class
+// Homebridge's own Matter behaviors use — not a hand-rolled stand-in. `HomebridgeOnOffServer.on()`
+// (node_modules/homebridge/dist/matter/behaviors/OnOffBehavior.js) does
+// `await registry.executeHandler(endpointId, 'onOff', 'on')` and only calls `super.on()` (which
+// commits cluster state) if that resolves — this is the exact await/reject mechanism a
+// fire-and-forget handler defeated.
+import { BehaviorRegistry } from '../node_modules/homebridge/dist/matter/behaviors/BehaviorRegistry.js';
 
 const matterApi = {
   deviceTypes: { Fan: 'FanDevice' },
@@ -181,9 +189,11 @@ describe('MatterFanBridge', () => {
     vi.spyOn(transport, 'set').mockRejectedValue(new Error('device unreachable'));
 
     const acc = bridge.buildAccessory();
-    acc.handlers!.onOff!.on!({}, undefined);
+    // The handler must return write()'s promise and it must reject — this is what lets
+    // Homebridge's Matter behavior see the failure and refuse to commit cluster state.
+    await expect(acc.handlers!.onOff!.on!({}, undefined)).rejects.toThrow('device unreachable');
 
-    await vi.waitFor(() => expect(log.warn).toHaveBeenCalled());
+    expect(log.warn).toHaveBeenCalled();
     // Matter must have been pushed the rolled-back (still off) state, not the
     // optimistic on-state the failed write never actually achieved.
     const onOffCall = matterApi.updateAccessoryState.mock.calls.find(([, cluster]) => cluster === 'onOff');
@@ -199,7 +209,7 @@ describe('MatterFanBridge', () => {
     );
 
     const acc = bridge.buildAccessory();
-    acc.handlers!.onOff!.on!({}, undefined);
+    await acc.handlers!.onOff!.on!({}, undefined);
 
     await vi.waitFor(() => expect(matterApi.updateAccessoryState).toHaveBeenCalledWith(bridge.uuid, 'fanControl', expect.anything()));
     // Both clusters were attempted — a rejection on onOff did not short-circuit fanControl.
@@ -207,6 +217,22 @@ describe('MatterFanBridge', () => {
     expect(clustersCalled).toContain('onOff');
     expect(clustersCalled).toContain('fanControl');
     expect(log.debug).toHaveBeenCalledWith(expect.stringContaining('onOff'), 'onOff failed');
+  });
+
+  it('propagates a disconnected-transport write failure through the real Homebridge registry.executeHandler path', async () => {
+    // Exercises the actual mechanism Homebridge's Matter behaviors rely on, not a mock
+    // that resolves regardless: registry.executeHandler() is exactly what
+    // HomebridgeOnOffServer.on() awaits before committing cluster state. Before this fix,
+    // the handler returned `undefined` synchronously, so this await resolved instantly and
+    // Homebridge committed the "on" state even though the write below never reached the fan.
+    const { transport, bridge } = harness();
+    vi.spyOn(transport, 'set').mockRejectedValue(new Error('device disconnected'));
+
+    const acc = bridge.buildAccessory();
+    const registry = new BehaviorRegistry(new Map([[acc.UUID, acc]]));
+    registry.registerHandler(acc.UUID, 'onOff', 'on', acc.handlers!.onOff!.on!);
+
+    await expect(registry.executeHandler(acc.UUID, 'onOff', 'on')).rejects.toThrow('device disconnected');
   });
 
   it('catches a rejected applyUpdate from onDps instead of an unhandled rejection', async () => {
