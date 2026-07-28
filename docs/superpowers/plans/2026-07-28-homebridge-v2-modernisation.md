@@ -1170,7 +1170,10 @@ export class TuyapiDevice implements TuyaDevice {
       key: opts.key,
       ip: opts.ip,
       version: opts.version,
-      issueRefreshOnConnect: true,
+      // NOT issueRefreshOnConnect: it makes tuyapi call refresh() internally on every
+      // connect, and refresh() hangs for 20s on this hardware. The timeout then emits
+      // 'error', which would route straight into the reconnect path — every healthy
+      // connection would schedule a spurious reconnect. We call get() ourselves instead.
     });
 
     // Both events previously called connect() directly, which allowed two retry

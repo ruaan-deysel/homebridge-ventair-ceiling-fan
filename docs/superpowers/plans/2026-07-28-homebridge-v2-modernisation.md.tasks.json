@@ -1,6 +1,6 @@
 {
   "planPath": "docs/superpowers/plans/2026-07-28-homebridge-v2-modernisation.md",
-  "lastUpdated": "2026-07-28T12:58:00+10:00",
+  "lastUpdated": "2026-07-28T13:05:00+10:00",
   "tasks": [
     {
       "id": 11,
@@ -11,13 +11,13 @@
     {
       "id": 1,
       "subject": "Task #1: Migrate packaging and tooling to ESM",
-      "status": "in_progress",
+      "status": "completed",
       "description": "**Goal:** The plugin builds as ESM and its entry point loads under Node 24 without a CommonJS require.\n\n**Files:**\n- Modify: `package.json`, `tsconfig.json`, `eslint.config.mjs` to `eslint.config.js`, `.gitignore`, `src/index.ts`, `src/platform.ts`, `src/platformAccessory.ts`\n- Create: `vitest.config.ts`, `.github/workflows/ci.yml`, `CHANGELOG.md`\n- Delete: committed `dist/`\n\n**Acceptance Criteria:**\n- [ ] `\"type\": \"module\"`; engines node ^22.10.0 || ^24.0.0, homebridge ^1.8.0 || ^2.0.0\n- [ ] tsconfig uses module/moduleResolution nodenext\n- [ ] All relative imports carry `.js` extensions\n- [ ] `Categories` value-import replaced with `api.hap.Categories` (the exact ESM break)\n- [ ] `Logger` type replaced with `Logging`\n- [ ] Version 2.0.0; keyword `supports-hap`\n- [ ] Deps tuyapi ^7.7.1, zod ^4.4.3, @homebridge/plugin-ui-utils ^2.2.5; vitest ^4.1.10\n- [ ] `dist/` untracked and gitignored; `files` includes dist + homebridge-ui\n- [ ] CI runs lint + test + build on Node 22 and 24\n- [ ] CHANGELOG.md created in Keep a Changelog format\n\n**Verify:** `npm run lint && npm run build && node --input-type=module -e \"await import('./dist/index.js')\"` exits 0 with no output.\n\n```json:metadata\n{\"files\": [\"package.json\", \"tsconfig.json\", \"eslint.config.js\", \"vitest.config.ts\", \".github/workflows/ci.yml\", \"CHANGELOG.md\", \".gitignore\"], \"verifyCommand\": \"npm run lint && npm run build\", \"acceptanceCriteria\": [\"type module set\", \"nodenext resolution\", \"js extensions on relative imports\", \"api.hap.Categories replaces value import\", \"dist untracked\", \"CI on node 22 and 24\", \"CHANGELOG.md created\"], \"modelTier\": \"mechanical\"}\n```"
     },
     {
       "id": 3,
       "subject": "Task #3: Build dps.ts single-source DPS mapping",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         11,
         1
@@ -27,7 +27,7 @@
     {
       "id": 4,
       "subject": "Task #4: Zod config validation, skip bad devices",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         1
       ],
@@ -36,7 +36,7 @@
     {
       "id": 5,
       "subject": "Task #5: TuyaDevice seam and reconnect supervisor",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         1
       ],
@@ -45,7 +45,7 @@
     {
       "id": 6,
       "subject": "Task #6: UDP discovery module",
-      "status": "pending",
+      "status": "in_progress",
       "blockedBy": [
         1
       ],
@@ -54,7 +54,7 @@
     {
       "id": 7,
       "subject": "Task #7: Platform lifecycle and stale cleanup",
-      "status": "pending",
+      "status": "in_progress",
       "blockedBy": [
         4,
         5,
