@@ -23,11 +23,13 @@
     "homebridge-ui",
     "config.schema.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "branding"
   ],
   "keywords": [
     "homebridge-plugin",
     "supports-hap",
+    "supports-matter",
     "skyfandc",
     "ceiling",
     "fan",

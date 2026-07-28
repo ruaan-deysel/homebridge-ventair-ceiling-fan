@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!--
+    Generic ceiling-fan mark for this plugin.
+
+    Deliberately an original, generic fan silhouette - NOT Ventair's logo or product
+    photography. This is an unofficial plugin with no affiliation to Ventair, so it must
+    not carry their trademark or imply endorsement.
+  -->
+  <rect width="512" height="512" rx="96" fill="#1c6ea4"/>
+
+  <g transform="translate(256 256)" fill="#ffffff">
+    <!-- four blades, rotationally symmetric -->
+    <g>
+      <path d="M0-34 C46-34 150-58 168-34 C186-10 96 22 0 22 Z" transform="rotate(0)"/>
+      <path d="M0-34 C46-34 150-58 168-34 C186-10 96 22 0 22 Z" transform="rotate(90)"/>
+      <path d="M0-34 C46-34 150-58 168-34 C186-10 96 22 0 22 Z" transform="rotate(180)"/>
+      <path d="M0-34 C46-34 150-58 168-34 C186-10 96 22 0 22 Z" transform="rotate(270)"/>
+    </g>
+    <!-- hub -->
+    <circle r="46" fill="#1c6ea4"/>
+    <circle r="46" fill="none" stroke="#ffffff" stroke-width="18"/>
+    <circle r="12" fill="#ffffff"/>
+  </g>
+</svg>
