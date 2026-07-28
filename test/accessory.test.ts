@@ -17,17 +17,22 @@ function harness(overrides: Record<string, unknown> = {}) {
     };
     return chain;
   };
-  const service = (name: string) => ({
-    setCharacteristic() { return service(name); },
+  // UUID/subtype fields mirror real HAP Service instances closely enough for the
+  // accessory's own getService/getServiceById/services-filter reconciliation logic
+  // to behave the same way it does against a real Homebridge accessory.
+  const service = (name: string, uuid: string, subtype?: string) => ({
+    UUID: uuid,
+    subtype,
+    setCharacteristic() { return service(name, uuid, subtype); },
     getCharacteristic(c: string) { return characteristic(`${name}.${c}`); },
     updateCharacteristic: vi.fn(),
     displayName: name,
   });
 
-  // Keyed by `${type}:${subtype ?? ''}` so a second construction against the same
-  // accessory (simulating a Homebridge restart restoring from cache) finds services
-  // already attached instead of re-adding them — the bug this harness now guards.
-  const services = new Map<string, ReturnType<typeof service>>();
+  // A live array, like `PlatformAccessory.services` — a second construction against
+  // the same accessory (simulating a Homebridge restart restoring from cache) sees
+  // whatever services are already attached instead of a fresh empty store.
+  const services: ReturnType<typeof service>[] = [];
 
   const platform = {
     log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -44,21 +49,22 @@ function harness(overrides: Record<string, unknown> = {}) {
   };
 
   const addService = vi.fn((t: string, name?: string, subtype?: string) => {
-    const svc = service(name ?? t);
-    services.set(`${t}:${subtype ?? ''}`, svc);
+    const svc = service(name ?? t, t, subtype);
+    services.push(svc);
     return svc;
   });
 
   const accessory = {
     context: {} as Record<string, unknown>,
-    getService: (t: string) => services.get(`${t}:`),
+    services,
+    // Real getService() matches by UUID only — first hit wins regardless of subtype.
+    getService: (t: string) => services.find(s => s.UUID === t),
     addService,
-    getServiceById: (t: string, subtype: string) => services.get(`${t}:${subtype}`),
+    getServiceById: (t: string, subtype: string) => services.find(s => s.UUID === t && s.subtype === subtype),
     removeService: vi.fn((svc: unknown) => {
-      for (const [key, value] of services) {
-        if (value === svc) {
-          services.delete(key);
-        }
+      const i = services.indexOf(svc as (typeof services)[number]);
+      if (i !== -1) {
+        services.splice(i, 1);
       }
     }),
   };
@@ -137,5 +143,51 @@ describe('fan control', () => {
 
     expect((accessory.addService as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAfterFirst);
     expect(handlers.get('Sleep.On')).toBeDefined();
+  });
+
+  it('adopts a legacy subtype-less Sleep switch instead of orphaning it', async () => {
+    const { platform, accessory, device } = harness({ exposeModeSwitches: true });
+    // Pre-fix cached accessories carry a Switch with no subtype at all — the exact
+    // shape round-1's bare `addService(S.Switch, label)` used to create.
+    const legacy = accessory.addService('Switch', 'Sleep');
+
+    const transport = new FakeTuyaDevice();
+    await transport.connect();
+    expect(() => new CeilingFanAccessory(platform as never, accessory as never, device as never, transport))
+      .not.toThrow();
+
+    const switches = accessory.services.filter(s => s.UUID === 'Switch');
+    expect(switches).toHaveLength(1);
+    expect(switches[0]).toBe(legacy);
+  });
+
+  it('consolidates a legacy switch plus the round-1 subtyped duplicate into one', async () => {
+    const { platform, accessory, device } = harness({ exposeModeSwitches: true });
+    // Reproduces the live bridge state: the original subtype-less Switch, plus the
+    // subtyped one round-1's getServiceById(Switch, 'sleep') added alongside it
+    // because it never matched the untyped one.
+    accessory.addService('Switch', 'Sleep');
+    const subtyped = accessory.addService('Switch', 'Sleep', 'sleep');
+    expect(accessory.services.filter(s => s.UUID === 'Switch')).toHaveLength(2);
+
+    const transport = new FakeTuyaDevice();
+    await transport.connect();
+    new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
+
+    const switches = accessory.services.filter(s => s.UUID === 'Switch');
+    expect(switches).toHaveLength(1);
+    expect(switches[0]).toBe(subtyped);
+  });
+
+  it('removes every Sleep switch when exposeModeSwitches is off, not just the subtyped one', async () => {
+    const { platform, accessory, device } = harness({ exposeModeSwitches: false });
+    accessory.addService('Switch', 'Sleep');
+    accessory.addService('Switch', 'Sleep', 'sleep');
+
+    const transport = new FakeTuyaDevice();
+    await transport.connect();
+    new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
+
+    expect(accessory.services.filter(s => s.UUID === 'Switch')).toHaveLength(0);
   });
 });

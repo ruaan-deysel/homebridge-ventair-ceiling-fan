@@ -72,16 +72,27 @@ export class CeilingFanAccessory {
     }
 
     const sleepSubtype = 'sleep';
+    // Every Switch service currently on the accessory, keyed only by UUID (not
+    // subtype). Cached accessories from before the subtype fix carry a bare,
+    // subtype-less Switch; a naive getServiceById(subtype) lookup misses it and
+    // adds a second one alongside it forever. Reconciling the whole set on every
+    // launch — preferring a subtyped match, otherwise adopting the legacy one,
+    // and removing any others — is idempotent and self-heals that state.
+    const cachedSwitches = this.accessory.services.filter(s => s.UUID === this.accessory.getService(S.Switch)?.UUID);
+
     if (device.exposeModeSwitches) {
       // Hardware has exactly two reachable modes (Normal, Sleep) — one switch covers it.
       // On writes Sleep, off writes Normal. Do not add Nature/Smart switches: writing
       // anything other than Normal/Sleep silently lands on Sleep on the real hardware.
-      // Switch is a generic HAP service type, so a stable subtype is required — on
-      // restart Homebridge restores the accessory with this service already attached,
-      // and a bare addService() throws "same UUID ... without a unique subtype".
       const label = 'Sleep';
-      this.sleepSwitch = this.accessory.getServiceById(S.Switch, sleepSubtype)
+      this.sleepSwitch = cachedSwitches.find(s => s.subtype === sleepSubtype)
+        ?? cachedSwitches[0] // adopt a legacy subtype-less Switch rather than orphaning it
         ?? this.accessory.addService(S.Switch, label, sleepSubtype);
+      for (const extra of cachedSwitches) {
+        if (extra !== this.sleepSwitch) {
+          this.accessory.removeService(extra);
+        }
+      }
       this.sleepSwitch.setCharacteristic(Characteristic.Name, label);
       this.sleepSwitch.setCharacteristic(Characteristic.ConfiguredName, `${device.name} Sleep`);
       this.sleepSwitch.getCharacteristic(Characteristic.On)
@@ -89,10 +100,10 @@ export class CeilingFanAccessory {
         .onGet(() => this.read(() => this.state.mode === MODE_SLEEP));
     } else {
       // exposeModeSwitches turned off after being on: the cached accessory still
-      // carries the switch — drop it instead of leaving a dead tile forever.
-      const stale = this.accessory.getServiceById(S.Switch, sleepSubtype);
-      if (stale) {
-        this.accessory.removeService(stale);
+      // carries the switch (possibly more than one, pre-fix) — drop all of them
+      // instead of leaving dead tiles in the Home app.
+      for (const extra of cachedSwitches) {
+        this.accessory.removeService(extra);
       }
     }
 
