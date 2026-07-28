@@ -31,7 +31,12 @@ export class TuyapiDevice implements TuyaDevice {
       key: opts.key,
       ip: opts.ip,
       version: opts.version,
-      issueRefreshOnConnect: true,
+      // Do NOT set issueRefreshOnConnect: tuyapi calls refresh() internally on
+      // every connect when this is set, fire-and-forget, and refresh() was
+      // measured to hang 20s against healthy hardware. The timeout then fires
+      // 'error', which schedules a spurious reconnect on every healthy
+      // connection. Initial state comes from the onConnected -> get({ schema: true })
+      // path below instead.
     });
 
     // Both events previously called connect() directly, which allowed two retry
@@ -95,8 +100,8 @@ export class TuyapiDevice implements TuyaDevice {
       this.log.info(`[${this.opts.id}] connected`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.attempt++;
       const delay = jitter(this.nextDelayMs);
+      this.attempt++;
       this.log.warn(`[${this.opts.id}] connect failed (${message}); retrying in ${Math.round(delay / 1000)}s`);
       this.armRetry(delay);
     }

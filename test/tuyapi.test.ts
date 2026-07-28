@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const connect = vi.fn();
 const find = vi.fn();
 const disconnect = vi.fn();
+const refresh = vi.fn();
 const handlers: Record<string, ((...a: unknown[]) => void)[]> = {};
 
 vi.mock('tuyapi', () => ({
@@ -10,6 +11,7 @@ vi.mock('tuyapi', () => ({
     connect = connect;
     find = find;
     disconnect = disconnect;
+    refresh = refresh;
     isConnected = () => false;
     get = vi.fn().mockResolvedValue({ dps: {} });
     set = vi.fn().mockResolvedValue({ dps: {} });
@@ -35,6 +37,7 @@ beforeEach(() => {
   connect.mockReset().mockResolvedValue(true);
   find.mockReset().mockResolvedValue(true);
   disconnect.mockReset();
+  refresh.mockReset();
   Object.values(log).forEach(m => m.mockReset());
 });
 
@@ -80,5 +83,24 @@ describe('reconnect supervision', () => {
     await vi.advanceTimersByTimeAsync(5000);
     const all = JSON.stringify(Object.values(log).map(m => m.mock.calls));
     expect(all).not.toContain(opts.key);
+  });
+
+  it('never calls refresh() — it hangs 20s against real hardware', async () => {
+    const d = new TuyapiDevice(opts, log);
+    d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('first retry delay is ~1s, not 2s', async () => {
+    const d = new TuyapiDevice(opts, log);
+    connect.mockRejectedValue(new Error('refused'));
+    d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    // jitter is 50-100% of nextDelayMs; after the first failure nextDelayMs is 2s
+    // (attempt incremented to 1), so the delay just scheduled was jitter(1s).
+    expect(d.nextDelayMs).toBe(2000);
   });
 });
