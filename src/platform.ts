@@ -48,31 +48,33 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
   }
 
   async discoverDevices(): Promise<void> {
-    if (this.devices.length === 0) {
-      return;
-    }
-
-    // A discovery failure must not abort setup for devices with a static `ip` — same
-    // per-device containment policy as parseDevices() and the setupDevice() try/catch below.
-    let addresses: Map<string, string>;
-    try {
-      addresses = await this.resolveAddresses();
-    } catch (error) {
-      this.log.warn('Device discovery failed:', error instanceof Error ? error.message : error);
-      addresses = new Map();
-    }
-
-    for (const device of this.devices) {
-      const uuid = this.api.hap.uuid.generate(device.id);
-      // One bad fan must cost one fan, not the bridge — same philosophy as parseDevices.
-      // uuid is still recorded below even on failure, so a transient setup error doesn't
-      // also make removeStaleAccessories() delete the accessory from the Home app.
+    // No discovery/connection attempt when nothing is configured, but stale cleanup
+    // below must still run — otherwise clearing `devices` leaves dead tiles in HomeKit
+    // forever, since discoveredCacheUUIDs/discoveredMatterUUIDs stay empty and every
+    // previously-cached accessory looks "stale" but is never actually removed.
+    if (this.devices.length > 0) {
+      // A discovery failure must not abort setup for devices with a static `ip` — same
+      // per-device containment policy as parseDevices() and the setupDevice() try/catch below.
+      let addresses: Map<string, string>;
       try {
-        await this.setupDevice(device, uuid, addresses);
+        addresses = await this.resolveAddresses();
       } catch (error) {
-        this.log.error(`Setup failed for "${device.name}":`, error instanceof Error ? error.message : error);
+        this.log.warn('Device discovery failed:', error instanceof Error ? error.message : error);
+        addresses = new Map();
       }
-      this.discoveredCacheUUIDs.push(uuid);
+
+      for (const device of this.devices) {
+        const uuid = this.api.hap.uuid.generate(device.id);
+        // One bad fan must cost one fan, not the bridge — same philosophy as parseDevices.
+        // uuid is still recorded below even on failure, so a transient setup error doesn't
+        // also make removeStaleAccessories() delete the accessory from the Home app.
+        try {
+          await this.setupDevice(device, uuid, addresses);
+        } catch (error) {
+          this.log.error(`Setup failed for "${device.name}":`, error instanceof Error ? error.message : error);
+        }
+        this.discoveredCacheUUIDs.push(uuid);
+      }
     }
 
     this.removeStaleAccessories();
@@ -122,10 +124,22 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
     const bridge = new MatterFanBridge(this.api.matter, device, hapUuid, transport, this.log);
     const accessory = bridge.buildAccessory();
 
-    if (!this.matterAccessories.has(bridge.uuid)) {
-      this.log.info('Adding new Matter fan:', device.name);
-      await this.api.matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-    }
+    // Always (re)register, even when `configureMatterAccessory` already restored this
+    // UUID into `matterAccessories` from the on-disk cache. That restore path passes a
+    // deserialized accessory with no handlers/getState — the Matter manager's own
+    // deserializer explicitly documents this: "handlers and getState are not restored
+    // from cache - plugins must provide these" (node_modules/homebridge/dist/matter/
+    // BaseMatterManager.js, deserializeMatterAccessory()). The live handlers only exist
+    // on the accessory just built by MatterFanBridge here. Registering it is also safe
+    // on restart specifically: AccessoryManager.registerAccessory() only throws
+    // "already registered" against the in-memory session `accessories` map, which is
+    // fresh per bridge process — the on-disk cache alone does not populate it — and it
+    // restores cached cluster state onto the newly-registered accessory via
+    // `restoreCachedState()` (node_modules/homebridge/dist/matter/server/
+    // AccessoryManager.js, registerAccessory(), lines ~33-40). Skipping this call is
+    // exactly what left Matter accessories inert after a restart.
+    this.log.info('Registering Matter fan:', device.name);
+    await this.api.matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
     this.matterAccessories.set(bridge.uuid, accessory);
     this.discoveredMatterUUIDs.push(bridge.uuid);
   }

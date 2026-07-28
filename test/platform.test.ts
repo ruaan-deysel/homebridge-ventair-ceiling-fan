@@ -14,6 +14,7 @@ vi.mock('../src/accessory.js', () => ({
 const { HomebridgeVentairCeilingFan } = await import('../src/platform.js');
 const { CeilingFanAccessory } = await import('../src/accessory.js');
 const { discover } = await import('../src/tuya/discovery.js');
+const { matterUuid } = await import('../src/matter.js');
 
 function harness() {
   const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), success: vi.fn(), log: vi.fn() };
@@ -124,6 +125,20 @@ describe('platform lifecycle', () => {
     expect(registered).not.toContain('Broken Fan');
   });
 
+  it('unregisters stale accessories even when the configured device list is empty', async () => {
+    const { log, api, handlers } = harness();
+    const platform = new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [] } as never, api as never);
+
+    const stale = { UUID: 'uuid-gone', displayName: 'Removed Fan', context: {} };
+    platform.configureAccessory(stale as never);
+
+    await handlers.didFinishLaunching?.();
+    await vi.waitFor(() => expect(api.unregisterPlatformAccessories).toHaveBeenCalled());
+
+    const [, , removed] = api.unregisterPlatformAccessories.mock.calls[0];
+    expect(removed).toEqual([stale]);
+  });
+
   it('still sets up a device with a static ip when discovery throws', async () => {
     const { log, api, handlers } = harness();
     (discover as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('network down'));
@@ -179,6 +194,25 @@ describe('Matter', () => {
     await handlers.didFinishLaunching?.();
     await vi.waitFor(() => expect(api.registerPlatformAccessories).toHaveBeenCalled());
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Matter'));
+  });
+
+  it('re-registers a Matter fan restored from the cache so live handlers attach after restart', async () => {
+    // Simulates a restart: configureMatterAccessory() (called by Homebridge before
+    // didFinishLaunching, restoring the on-disk cache) already populated
+    // matterAccessories with this UUID *before* discoverDevices() ever runs.
+    const { log, api, handlers, matter } = matterHarness();
+    const matterDevice = { ...device, exposeMatter: true };
+    const platform = new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [matterDevice] } as never, api as never);
+
+    const cachedFromDisk = { UUID: matterUuid(matterDevice.id), displayName: 'Family Room Fan (restored, no handlers)' };
+    platform.configureMatterAccessory(cachedFromDisk as never);
+
+    await handlers.didFinishLaunching?.();
+
+    // The cached-from-disk accessory has no live handlers (Homebridge's Matter cache
+    // never restores them) — registerPlatformAccessories must still be called with the
+    // freshly-built accessory so the transport/onDps handlers actually go live.
+    await vi.waitFor(() => expect(matter.registerPlatformAccessories).toHaveBeenCalled());
   });
 
   it('unregisters stale Matter accessories no longer in config', async () => {

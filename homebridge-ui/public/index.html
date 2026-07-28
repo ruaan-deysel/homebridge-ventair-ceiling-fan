@@ -81,6 +81,8 @@
         await homebridge.updatePluginConfig([platform, ...rest]);
         await homebridge.savePluginConfig();
         homebridge.toast.success(message || 'Saved');
+      } catch (e) {
+        homebridge.toast.error(e.message || 'Could not save your change', 'Save failed');
       } finally {
         setBusy(false);
       }
@@ -284,7 +286,9 @@
       const status = document.getElementById('fetch-status');
       status.textContent = 'Contacting Tuya...';
       try {
-        const devices = await homebridge.request('/keys', { clientId, secret, region, ids });
+        // A failure fetching one fan's key must not discard the keys that DID come
+        // back — same skip-bad-device policy as the rest of this UI/plugin.
+        const { devices, failed } = await homebridge.request('/keys', { clientId, secret, region, ids });
         const byId = new Map(devices.map(d => [d.id, d]));
         let updated = 0;
         for (const device of platform.devices) {
@@ -294,9 +298,20 @@
             updated += 1;
           }
         }
-        await persist();
-        status.textContent = `Updated ${updated} key(s).`;
-        homebridge.toast.success(`Updated ${updated} key(s) from Tuya Cloud`);
+        if (updated > 0) {
+          await persist();
+        }
+        if (failed.length > 0) {
+          const names = failed.map(f => {
+            const known = platform.devices.find(d => d.id === f.id);
+            return `${known ? known.name : f.id}: ${f.message}`;
+          }).join('; ');
+          status.textContent = `Updated ${updated} key(s); ${failed.length} failed.`;
+          homebridge.toast.warning(names, 'Some fans could not be fetched');
+        } else {
+          status.textContent = `Updated ${updated} key(s).`;
+          homebridge.toast.success(`Updated ${updated} key(s) from Tuya Cloud`);
+        }
         renderAll();
       } catch (e) {
         status.textContent = '';
