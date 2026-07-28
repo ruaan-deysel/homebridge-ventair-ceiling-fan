@@ -10,3 +10,4 @@ graphify-out/
 .superpowers/
 dist/
 coverage/
+.playwright-mcp/
