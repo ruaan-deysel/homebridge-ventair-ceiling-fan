@@ -29,7 +29,10 @@ Established during design against live hardware and the Tuya cloud API:
 | Bridge | `192.0.2.10:8581`, Homebridge 2.2.1, Node v24.18.0 |
 | Host | Unraid `bridge-host`, Homebridge container uses **host** networking |
 | Fans | 8 × Ventair Skyfan DC, product key `vzj97d3m05yjhchn`, category `fs`, protocol 3.3 |
-| DP codes | `switch` (bool), `mode` (enum nature/sleep/smart), `fan_speed_percent` (int 1–5 step 1), `fan_direction` (enum forward/reverse), `countdown_set` (enum, unused) |
+| DP indices | **1** power (bool), **2** mode (string), **3** speed (1–5, *can be absent*), **8** direction, **22** countdown (unused). Measured over LAN. |
+| Mode values | Device reports **`Normal`**; only `Normal` and `Sleep` are reachable while the fan is off. Cloud's `nature/sleep/smart` enum is **incomplete and partly unreachable**. Retest powered-on in #10. |
+| Lights | None. DP 15/16 absent on all 8 units. |
+| Broken API | `tuyapi.refresh({})` **hangs** — timed out at 20s against a healthy device. Do not use it. |
 | Lights | **None.** No light DPs exist on any of the 8 units |
 | Keys | All exactly 16 chars, contain `` ` `` `|` `$` `<` `!` `?` `'` — must be quoted carefully |
 | Credentials | `.env` (gitignored) — bridge, Unraid host, and Tuya cloud |
@@ -1893,16 +1896,26 @@ describe('fan control', () => {
     expect(transport.state[DP.mode]).toBe('smart');
   });
 
-  it('turning off the active mode switch is a no-op', async () => {
+  it('turning off the active mode switch returns the fan to Normal', async () => {
     const { platform, accessory, device, handlers } = harness({ exposeModeSwitches: true });
     const transport = new FakeTuyaDevice();
     await transport.connect();
     new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
 
     await handlers.get('Nature.On')?.onSet?.(true);
-    const writeCount = transport.writes.length;
     await handlers.get('Nature.On')?.onSet?.(false);
-    expect(transport.writes.length).toBe(writeCount);
+    // The device expects capitalised mode strings.
+    expect(transport.state[DP.mode]).toBe('Normal');
+  });
+
+  it('writes mode capitalised, as the device requires', async () => {
+    const { platform, accessory, device, handlers } = harness({ exposeModeSwitches: true });
+    const transport = new FakeTuyaDevice();
+    await transport.connect();
+    new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
+
+    await handlers.get('Sleep.On')?.onSet?.(true);
+    expect(transport.state[DP.mode]).toBe('Sleep');
   });
 });
 ```
