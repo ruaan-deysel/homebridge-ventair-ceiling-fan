@@ -1,0 +1,86 @@
+<div class="card">
+  <h5>Find your fans</h5>
+  <p class="text-muted small">
+    Scans the local network for Tuya devices. Your fans must be on the same network as Homebridge.
+  </p>
+  <button class="btn btn-primary" id="scan">Scan for fans</button>
+  <div id="scan-result" class="mt-3"></div>
+</div>
+
+<div class="card mt-3">
+  <h5>Fetch local keys</h5>
+  <p class="text-muted small">
+    Local keys come from your Tuya IoT project. These credentials are used once for this
+    request and are <strong>not saved</strong> to your Homebridge config.
+  </p>
+  <input class="form-control mb-2" id="clientId" placeholder="Access ID">
+  <input class="form-control mb-2" id="secret" type="password" placeholder="Access Secret">
+  <select class="form-control mb-2" id="region">
+    <option value="eu">Europe</option>
+    <option value="us">Americas</option>
+    <option value="cn">China</option>
+    <option value="in">India</option>
+  </select>
+  <button class="btn btn-primary" id="fetch">Fetch keys and fill config</button>
+  <div id="key-result" class="mt-3"></div>
+</div>
+
+<script>
+  let discovered = [];
+
+  document.getElementById('scan').addEventListener('click', async () => {
+    const out = document.getElementById('scan-result');
+    out.textContent = 'Scanning, this takes about 12 seconds...';
+    try {
+      discovered = await homebridge.request('/discover');
+      out.innerHTML = discovered.length
+        ? '<ul>' + discovered.map(d => `<li>${d.id} — ${d.ip} (v${d.version})</li>`).join('') + '</ul>'
+        : 'No devices found. Check that Homebridge is on the same network as your fans.';
+    } catch (e) {
+      out.textContent = e.message;
+    }
+  });
+
+  document.getElementById('fetch').addEventListener('click', async () => {
+    const out = document.getElementById('key-result');
+    if (!discovered.length) {
+      out.textContent = 'Scan for fans first.';
+      return;
+    }
+    out.textContent = 'Contacting Tuya...';
+    try {
+      const devices = await homebridge.request('/keys', {
+        clientId: document.getElementById('clientId').value.trim(),
+        secret: document.getElementById('secret').value.trim(),
+        region: document.getElementById('region').value,
+        ids: discovered.map(d => d.id),
+      });
+
+      const config = await homebridge.getPluginConfig();
+      const platform = config[0] ?? { platform: 'HomebridgeVentairCeilingFan', name: 'Skyfan DC Ceiling Fan' };
+      // Preserve fields on devices that were already configured (e.g. exposeMatter,
+      // hasLight, ip, version) — a re-scan only refreshes id/name/key.
+      const existingById = new Map((platform.devices || []).map(d => [d.id, d]));
+      platform.devices = devices.map(d => {
+        const existing = existingById.get(d.id) ?? {};
+        return {
+          ...existing,
+          name: d.name,
+          id: d.id,
+          key: d.key,
+          hasLight: existing.hasLight ?? false,
+          exposeModeSwitches: existing.exposeModeSwitches ?? false,
+        };
+      });
+      await homebridge.updatePluginConfig([platform]);
+      await homebridge.savePluginConfig();
+
+      out.textContent = `Filled in ${devices.length} fan(s). Review the settings below and restart Homebridge.`;
+    } catch (e) {
+      out.textContent = e.message;
+    } finally {
+      // Clear the secret from the DOM as soon as it's been used, on success or failure.
+      document.getElementById('secret').value = '';
+    }
+  });
+</script>

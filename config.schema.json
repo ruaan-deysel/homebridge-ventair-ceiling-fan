@@ -2,6 +2,7 @@
   "pluginAlias": "HomebridgeVentairCeilingFan",
   "pluginType": "platform",
   "singular": true,
+  "customUi": true,
   "headerDisplay": "Control Ventair Skyfan DC ceiling fans locally over your network. Use the Scan button to find fans, or fetch local keys from your Tuya IoT account.",
   "schema": {
     "type": "object",
