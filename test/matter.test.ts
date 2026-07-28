@@ -18,6 +18,16 @@ const device = { id: 'a'.repeat(20), key: 'x'.repeat(16), name: 'Test Fan' };
  */
 const MANDATORY_FAN_CONTROL_ATTRIBUTES = ['fanMode', 'fanModeSequence', 'percentSetting', 'percentCurrent'] as const;
 
+/**
+ * `speedMax`/`speedCurrent`/`speedSetting` require the FanControl "Speed" (SPD) feature,
+ * which the plain `deviceTypes.Fan` we register does not declare — Homebridge's Matter
+ * plugin API has no way to opt in. Sending them anyway rolled back the *entire* state
+ * update on a live bridge ("Conformance SPD: Matter does not allow you to set this
+ * attribute"), including the always-allowed percent attributes. This is the regression
+ * guard for that failure: the exact attribute set below (and only this set) must appear.
+ */
+const ALLOWED_FAN_CONTROL_ATTRIBUTES = ['fanMode', 'fanModeSequence', 'percentSetting', 'percentCurrent'] as const;
+
 describe('buildMatterAccessory', () => {
   it('declares a Fan device with onOff and fanControl clusters', () => {
     const acc = buildMatterAccessory(matterApi as never, 'uuid-1', device as never, {
@@ -26,10 +36,19 @@ describe('buildMatterAccessory', () => {
     });
     expect(acc.deviceType).toBe('FanDevice');
     expect(acc.clusters!.onOff!.onOff).toBe(true);
-    expect(acc.clusters!.fanControl!.speedMax).toBe(5);
-    expect(acc.clusters!.fanControl!.speedCurrent).toBe(3);
     expect(acc.clusters!.fanControl!.percentCurrent).toBe(60);
     expect(acc.clusters!.fanControl!.fanMode).toBe(2); // Medium (step 3)
+  });
+
+  it('sets exactly the always-allowed FanControl attributes — nothing SPD-gated', () => {
+    const acc = buildMatterAccessory(matterApi as never, 'uuid-1', device as never, {
+      power: true, speedStep: 3, mode: 'normal', direction: 'forward',
+      lightPower: false, lightBrightness: 100,
+    });
+    expect(Object.keys(acc.clusters!.fanControl!).sort()).toEqual([...ALLOWED_FAN_CONTROL_ATTRIBUTES].sort());
+    expect(acc.clusters!.fanControl).not.toHaveProperty('speedMax');
+    expect(acc.clusters!.fanControl).not.toHaveProperty('speedCurrent');
+    expect(acc.clusters!.fanControl).not.toHaveProperty('speedSetting');
   });
 
   it('reports 0% and off when the fan is stopped', () => {

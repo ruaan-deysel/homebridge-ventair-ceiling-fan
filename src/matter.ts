@@ -4,7 +4,7 @@ import type { Logging } from 'homebridge';
 import type { MatterAccessory, MatterAPI } from 'homebridge';
 
 import type { VentairDevice } from './config.js';
-import { DEFAULT_BRIGHTNESS_SCALE, type DpValue, type FanState, MAX_SPEED_STEP, MODE_NORMAL, percentToStep, stepToPercent, toDps, toFanState } from './dps.js';
+import { DEFAULT_BRIGHTNESS_SCALE, type DpValue, type FanState, MODE_NORMAL, percentToStep, stepToPercent, toDps, toFanState } from './dps.js';
 import type { TuyaDevice } from './tuya/device.js';
 
 /**
@@ -69,6 +69,20 @@ export function matterUuid(deviceId: string): string {
  *
  * Matter's FanControl cluster has no rotation-direction attribute, so `direction` is not
  * represented here; it stays HAP-only (see README).
+ *
+ * Only sets the FanControl base attributes (`fanMode`, `fanModeSequence`, `percentCurrent`,
+ * `percentSetting`) — these are unconditionally mandatory ("M" conformance) and always
+ * allowed. `speedMax`/`speedCurrent`/`speedSetting` are deliberately NOT set: they require
+ * the optional "Speed" (SPD) feature on the FanControl cluster, and Homebridge's Matter
+ * plugin API has no way to declare cluster features when registering an accessory (checked
+ * `MatterAccessory`/`MatterAccessoryPart` in `homebridge`'s `dist/matter/types.d.ts` — no
+ * `features` field; and `deviceTypes.Fan` always builds `FanDeviceDefinition` with the base
+ * `FanControlServer`, which matter.js instantiates with no `.with(Feature...)` — see
+ * `@matter/node`'s `devices/fan.d.ts` and `behaviors/fan-control/FanControlServer.d.ts`).
+ * Setting SPD-gated attributes on a cluster that doesn't declare SPD is a conformance
+ * violation that rolls back the *entire* state update, so they're dropped rather than sent
+ * speculatively. `percentCurrent`/`percentSetting` already fully express this 1-5-speed fan
+ * (20/40/60/80/100%), so nothing is lost.
  */
 function matterClusters(matterApi: MatterAPI, state: FanState): { onOff: { onOff: boolean }; fanControl: Record<string, number> } {
   const speedCurrent = state.power ? state.speedStep : 0;
@@ -78,9 +92,6 @@ function matterClusters(matterApi: MatterAPI, state: FanState): { onOff: { onOff
     fanControl: {
       fanMode: fanModeForStep(matterApi, speedCurrent),
       fanModeSequence: fanModeSequence(matterApi),
-      speedMax: MAX_SPEED_STEP,
-      speedCurrent,
-      speedSetting: speedCurrent,
       percentCurrent,
       percentSetting: percentCurrent,
     },
