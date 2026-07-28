@@ -73,11 +73,16 @@ export function discover(timeoutMs = 10_000): Promise<DiscoveredDevice[]> {
           found.set(device.id, device);
         }
       });
+      sockets.push(socket);
       try {
         socket.bind(port);
-        sockets.push(socket);
       } catch {
-        // ignore — the other port may still work
+        // synchronous bind failure — close it now so it isn't leaked; the other port may still work
+        try {
+          socket.close();
+        } catch {
+          // already unusable
+        }
       }
     }
 

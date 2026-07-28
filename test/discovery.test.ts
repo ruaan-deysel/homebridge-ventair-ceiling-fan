@@ -1,8 +1,26 @@
 import crypto from 'node:crypto';
-import { describe, expect, it } from 'vitest';
-import { decodeBroadcast } from '../src/tuya/discovery.js';
+import { EventEmitter } from 'node:events';
+import { describe, expect, it, vi } from 'vitest';
+import { decodeBroadcast, discover } from '../src/tuya/discovery.js';
 
 const UDP_KEY = crypto.createHash('md5').update('yGAdlopoPVldABfn').digest();
+
+class FakeSocket extends EventEmitter {
+  close = vi.fn();
+  constructor(private readonly bindImpl: () => void) {
+    super();
+  }
+  bind(): void {
+    this.bindImpl();
+  }
+}
+
+const { createSocketMock } = vi.hoisted(() => ({ createSocketMock: vi.fn() }));
+
+vi.mock('node:dgram', () => ({
+  default: { createSocket: createSocketMock },
+  createSocket: createSocketMock,
+}));
 
 function frame(payload: Buffer): Buffer {
   // 20-byte header + payload + 8-byte CRC/suffix, matching Tuya's 55AA framing
@@ -31,5 +49,26 @@ describe('decodeBroadcast', () => {
 
   it('returns null when the frame is too short to contain a payload', () => {
     expect(decodeBroadcast(Buffer.alloc(10))).toBeNull();
+  });
+});
+
+describe('discover', () => {
+  it('closes a socket that fails to bind synchronously, and still resolves with the other port', async () => {
+    const failingSocket = new FakeSocket(() => {
+      throw new Error('EADDRINUSE');
+    });
+    const workingSocket = new FakeSocket(() => {
+      // bind succeeds; simulate a broadcast arriving right after
+      queueMicrotask(() => {
+        const buf = frame(Buffer.from(JSON.stringify(wireAnnouncement)));
+        workingSocket.emit('message', buf);
+      });
+    });
+    createSocketMock.mockReturnValueOnce(failingSocket).mockReturnValueOnce(workingSocket);
+
+    const result = await discover(10);
+
+    expect(failingSocket.close).toHaveBeenCalled();
+    expect(result).toEqual([decoded]);
   });
 });
