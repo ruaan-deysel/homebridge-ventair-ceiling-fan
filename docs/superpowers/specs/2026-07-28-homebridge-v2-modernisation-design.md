@@ -132,8 +132,19 @@ protocol while the fan is off:
 | `Normal` | `Normal` |
 | `Nature`, `Smart`, `Sleep`, `nature`, `smart` | `Sleep` |
 
-Any non-`Normal` string coerces to `Sleep`. Working hypothesis: `Nature`/`Smart` require the
-motor to be running. **Unresolved — to be retested with the fan powered on during task #10.**
+Any non-`Normal` string coerces to `Sleep`.
+
+**Retested with the fan powered on (2026-07-28, user-authorised):** identical result. Power
+state is irrelevant — `Nature` and `Smart` still report back as `Sleep` with the motor running.
+
+**Conclusion: the local protocol supports exactly two modes, `Normal` and `Sleep`.** The
+cloud's `nature`/`smart` values are unreachable over LAN; the behaviour is consistent with the
+firmware resolving the enum by index and mapping anything unrecognised to index 1 (`Sleep`).
+The plugin therefore exposes **one** mode switch, not three.
+
+Also confirmed in the same powered-on run: speeds 1–5 all set and read back exactly, and both
+directions round-trip. The fan was restored to its original state (off, `Normal`, speed 1,
+forward).
 
 **DP 3 can be absent.** Lounge Room and Guest Room returned no speed datapoint at all. Code
 must treat a missing DP as "unknown", never as zero. This is why `toFanState` returns a partial
@@ -193,11 +204,14 @@ Imported by both `platform.ts` (runtime IP/version resolution) and `homebridge-u
   device spec has exactly three modes — `nature`, `sleep`, `smart` — and no manual mode, so
   there is nothing to map `MANUAL` onto. Forcing a 3-way selector into a 2-way characteristic
   would reproduce the exact lossiness that makes the `SwingMode` hack wrong.
-- **Mode is exposed as three mutually-exclusive `Switch` services** (Nature / Sleep / Smart)
-  behind the config flag `exposeModeSwitches`, default `false`. Selecting one clears the other
-  two; **turning the active switch off returns the fan to `Normal`**, which the LAN probe
-  confirmed is a real, writable mode. All three switches off therefore means Normal — the
-  mapping is lossless and "off" carries meaning rather than being a no-op.
+- **Mode is exposed as a single `Switch` service named "Sleep"**, behind the config flag
+  `exposeModeSwitches`, default `false`. On writes `Sleep`; off writes `Normal`. The hardware
+  has exactly two reachable modes, so one switch is a complete, lossless mapping.
+
+  This replaces an earlier three-switch design (Nature / Sleep / Smart). That design was
+  correct for the *cloud* specification and wrong for the device: `Nature` and `Smart` cannot
+  be set over LAN in any casing, powered on or off. Exposing switches for them would have
+  produced two tiles that silently turn the fan to Sleep — worse than not offering them.
 - **Mode parsing is permissive, not strict.** The cloud enum turned out to be incomplete, so
   `dps.ts` matches known modes case-insensitively and **preserves unrecognised values** rather
   than discarding them. Rejecting unknown modes would have silently dropped `Normal` — the

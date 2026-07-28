@@ -523,16 +523,16 @@ export const DP = {
 } as const;
 
 /**
- * Modes confirmed over the LAN. The device reports capitalised values ("Normal"), and the
- * cloud specification omits "Normal" entirely — so this list is treated as *known* modes,
- * not as an exhaustive enum. Unrecognised values are preserved, never discarded.
+ * Modes reachable over the LAN, confirmed by write probe both powered off and running:
+ * the device accepts only "Normal" and "Sleep". Anything else — including the cloud's
+ * "nature" and "smart" — comes back as "Sleep", consistent with the firmware resolving
+ * the enum by index and defaulting unknowns to index 1.
  *
- * "normal" is the default state; all mode switches off means Normal.
+ * Kept as a plain string type, not a union: the cloud specification was already wrong
+ * once, so unrecognised values are preserved rather than discarded.
  */
-export const KNOWN_MODES = ['normal', 'nature', 'sleep', 'smart'] as const;
-
-/** Modes offered as HomeKit switches. Normal is the implicit all-switches-off state. */
-export const SWITCHABLE_MODES = ['nature', 'sleep', 'smart'] as const;
+export const MODE_NORMAL = 'normal';
+export const MODE_SLEEP = 'sleep';
 
 export type FanMode = string;
 
@@ -1887,39 +1887,27 @@ describe('fan control', () => {
     expect(() => handlers.get('Fanv2.Active')?.onGet?.()).toThrow();
   });
 
-  it('mode switches are mutually exclusive', async () => {
+  it('sleep switch on writes Sleep, off writes Normal', async () => {
     const { platform, accessory, device, handlers } = harness({ exposeModeSwitches: true });
     const transport = new FakeTuyaDevice();
     await transport.connect();
     new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
 
+    // Device accepts only Normal and Sleep, and requires capitalised strings.
     await handlers.get('Sleep.On')?.onSet?.(true);
-    expect(transport.state[DP.mode]).toBe('sleep');
+    expect(transport.state[DP.mode]).toBe('Sleep');
 
-    await handlers.get('Smart.On')?.onSet?.(true);
-    expect(transport.state[DP.mode]).toBe('smart');
-  });
-
-  it('turning off the active mode switch returns the fan to Normal', async () => {
-    const { platform, accessory, device, handlers } = harness({ exposeModeSwitches: true });
-    const transport = new FakeTuyaDevice();
-    await transport.connect();
-    new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
-
-    await handlers.get('Nature.On')?.onSet?.(true);
-    await handlers.get('Nature.On')?.onSet?.(false);
-    // The device expects capitalised mode strings.
+    await handlers.get('Sleep.On')?.onSet?.(false);
     expect(transport.state[DP.mode]).toBe('Normal');
   });
 
-  it('writes mode capitalised, as the device requires', async () => {
-    const { platform, accessory, device, handlers } = harness({ exposeModeSwitches: true });
+  it('exposes no mode switch when exposeModeSwitches is false', async () => {
+    const { platform, accessory, device, handlers } = harness({ exposeModeSwitches: false });
     const transport = new FakeTuyaDevice();
     await transport.connect();
     new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
 
-    await handlers.get('Sleep.On')?.onSet?.(true);
-    expect(transport.state[DP.mode]).toBe('Sleep');
+    expect(handlers.get('Sleep.On')).toBeUndefined();
   });
 });
 ```
@@ -1936,18 +1924,18 @@ Expected: FAIL — cannot resolve `../src/accessory.js`.
 import type { CharacteristicValue, PlatformAccessory, Service } from 'homebridge';
 
 import type { VentairDevice } from './config.js';
-import { DEFAULT_BRIGHTNESS_SCALE, MODES, type FanMode, type FanState, percentToStep, stepToPercent, toDps, toFanState } from './dps.js';
+import { DEFAULT_BRIGHTNESS_SCALE, MODE_NORMAL, MODE_SLEEP, type FanState, percentToStep, stepToPercent, toDps, toFanState } from './dps.js';
 import type { HomebridgeVentairCeilingFan } from './platform.js';
 import type { TuyaDevice } from './tuya/device.js';
 
 export class CeilingFanAccessory {
   private readonly fan: Service;
   private readonly light?: Service;
-  private readonly modeSwitches = new Map<FanMode, Service>();
+  private sleepSwitch?: Service;
 
   private readonly state: FanState = {
     power: false,
-    mode: 'nature',
+    mode: MODE_NORMAL,
     speedStep: 0,
     direction: 'forward',
     lightPower: false,
@@ -2007,16 +1995,14 @@ export class CeilingFanAccessory {
     }
 
     if (device.exposeModeSwitches) {
-      for (const mode of MODES) {
-        const label = mode.charAt(0).toUpperCase() + mode.slice(1);
-        const service = this.accessory.addService(S.Switch, label);
-        service.setCharacteristic(Characteristic.Name, label);
-        service.setCharacteristic(Characteristic.ConfiguredName, `${device.name} ${label}`);
-        service.getCharacteristic(Characteristic.On)
-          .onSet(v => this.setMode(mode, v as boolean))
-          .onGet(() => this.read(() => this.state.mode === mode));
-        this.modeSwitches.set(mode, service);
-      }
+      // One switch: the hardware has exactly two reachable modes. On = Sleep, off = Normal.
+      const label = 'Sleep';
+      this.sleepSwitch = this.accessory.addService(S.Switch, label);
+      this.sleepSwitch.setCharacteristic(Characteristic.Name, label);
+      this.sleepSwitch.setCharacteristic(Characteristic.ConfiguredName, `${device.name} Sleep`);
+      this.sleepSwitch.getCharacteristic(Characteristic.On)
+        .onSet(v => this.write({ mode: v ? MODE_SLEEP : MODE_NORMAL }).then(() => this.syncModeSwitch()))
+        .onGet(() => this.read(() => this.state.mode === MODE_SLEEP));
     }
 
     this.transport.onDps(dps => this.applyUpdate(dps));
@@ -2065,20 +2051,11 @@ export class CeilingFanAccessory {
     await this.write({ direction });
   }
 
-  /**
-   * Nature/Sleep/Smart are switches; "all off" means Normal, which the LAN probe
-   * confirmed is a real writable mode. So turning the active switch off is a genuine
-   * action — return the fan to Normal — not a no-op.
-   */
-  private async setMode(mode: FanMode, on: boolean): Promise<void> {
-    await this.write({ mode: on ? mode : 'normal' });
-    this.syncModeSwitches();
-  }
-
-  private syncModeSwitches(): void {
-    for (const [mode, service] of this.modeSwitches) {
-      service.updateCharacteristic(this.platform.Characteristic.On, this.state.mode === mode);
-    }
+  private syncModeSwitch(): void {
+    this.sleepSwitch?.updateCharacteristic(
+      this.platform.Characteristic.On,
+      this.state.mode === MODE_SLEEP,
+    );
   }
 
   /** Optimistic local update plus one batched write. */
@@ -2122,7 +2099,7 @@ export class CeilingFanAccessory {
       );
     }
     if (patch.mode !== undefined) {
-      this.syncModeSwitches();
+      this.syncModeSwitch();
     }
     if (this.light && patch.lightPower !== undefined) {
       this.light.updateCharacteristic(Characteristic.On, patch.lightPower);
