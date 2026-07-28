@@ -96,8 +96,9 @@ export class CeilingFanAccessory {
       this.sleepSwitch.setCharacteristic(Characteristic.Name, label);
       this.sleepSwitch.setCharacteristic(Characteristic.ConfiguredName, `${device.name} Sleep`);
       this.sleepSwitch.getCharacteristic(Characteristic.On)
-        // write() catches all transport errors internally and always resolves — see its
-        // own try/catch below. No .catch() needed here.
+        // write() rolls back and rethrows a HapStatusError on failure — syncModeSwitch()
+        // only runs on success, and the rejection propagates to HAP, which reverts the
+        // switch in the Home app. No .catch() needed here.
         .onSet(v => this.write({ mode: v ? MODE_SLEEP : MODE_NORMAL }).then(() => this.syncModeSwitch()))
         .onGet(() => this.read(() => this.state.mode === MODE_SLEEP));
     } else {
@@ -164,13 +165,21 @@ export class CeilingFanAccessory {
     );
   }
 
-  /** Optimistic local update plus one batched write. */
+  /** Optimistic local update, one `set()` call per datapoint. Rolled back on failure. */
   private async write(patch: Partial<FanState>): Promise<void> {
+    const previous = {} as Partial<FanState>;
+    (Object.keys(patch) as (keyof FanState)[]).forEach(key => {
+      (previous as Record<keyof FanState, unknown>)[key] = this.state[key];
+    });
     Object.assign(this.state, patch);
     try {
       await this.transport.set(toDps(patch, this.dpsOptions));
     } catch (error) {
+      Object.assign(this.state, previous);
       this.platform.log.warn(`[${this.device.name}] write failed:`, error instanceof Error ? error.message : error);
+      throw new this.platform.api.hap.HapStatusError(
+        this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
+      );
     }
   }
 

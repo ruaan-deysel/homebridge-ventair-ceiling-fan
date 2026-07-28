@@ -179,20 +179,23 @@ describe('fan control', () => {
     expect(switches[0]).toBe(subtyped);
   });
 
-  it("write()'s internal catch logs a rejected transport write instead of throwing", async () => {
+  it('write() rolls back optimistic state and throws SERVICE_COMMUNICATION_FAILURE on a rejected transport write', async () => {
     const { platform, accessory, device, handlers } = harness({ exposeModeSwitches: true });
     const transport = new FakeTuyaDevice();
     await transport.connect();
     vi.spyOn(transport, 'set').mockRejectedValue(new Error('device unreachable'));
     new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
 
-    // Sleep.On's onSet chains write().then(syncModeSwitch) with no .catch of its own —
-    // it relies entirely on write() (src/accessory.ts) never rejecting.
-    await expect(handlers.get('Sleep.On')?.onSet?.(true)).resolves.toBeUndefined();
+    // Sleep.On's onSet chains write().then(syncModeSwitch); write() now rejects on a
+    // failed transport write instead of swallowing the error, so HomeKit reverts the
+    // switch instead of showing a value the hardware never took.
+    await expect(handlers.get('Sleep.On')?.onSet?.(true)).rejects.toThrow();
     expect(platform.log.warn).toHaveBeenCalledWith(
       expect.stringContaining('write failed'),
       'device unreachable',
     );
+    // State was rolled back to its pre-write value (mode stayed Normal, not Sleep).
+    expect(handlers.get('Sleep.On')?.onGet?.()).toBe(false);
   });
 
   it('removes every Sleep switch when exposeModeSwitches is off, not just the subtyped one', async () => {

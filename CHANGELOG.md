@@ -47,8 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Corrected the datapoint map against live hardware: the countdown timer is datapoint 22,
   not 2. The fan mode datapoint reports `Normal`, a value absent from Tuya's published
   specification.
-- Device writes are batched into a single multi-datapoint call instead of a sequence of
-  single-datapoint writes.
+- Device writes go out as a sequence of single-datapoint calls. An earlier draft batched
+  them into one multi-datapoint call, but that was reverted after live hardware showed
+  this firmware silently ignores batched writes.
 - `tuyapi` is now confined behind an internal interface so it can be replaced without
   touching the rest of the plugin.
 - `Categories` is read from `api.hap` rather than imported as a value from `homebridge`,

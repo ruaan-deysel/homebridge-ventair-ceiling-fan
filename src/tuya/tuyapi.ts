@@ -49,12 +49,20 @@ export class TuyapiDevice implements TuyaDevice {
 
     this.device.on('error', (error: Error) => {
       this.log.debug(`[${this.opts.id}] transport error: ${error.message}`);
+      if (this.connectedState) {
+        this.connectedState = false;
+        this.disconnectedListeners.forEach(l => l());
+      }
       this.scheduleReconnect('error');
     });
 
     this.device.on('connected', () => {
       this.connectedState = true;
       this.attempt = 0;
+      if (this.retryTimer) {
+        clearTimeout(this.retryTimer);
+        this.retryTimer = null;
+      }
       this.connectedListeners.forEach(l => l());
     });
 

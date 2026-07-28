@@ -106,6 +106,38 @@ describe('reconnect supervision', () => {
     expect(d.nextDelayMs).toBe(2000);
   });
 
+  it('marks disconnected and notifies listeners on a transport error, not just on the disconnected event', async () => {
+    const d = new TuyapiDevice(opts, log);
+    const disconnected = vi.fn();
+    d.onDisconnected(disconnected);
+    connect.mockImplementation(() => new Promise(() => {})); // never settles
+    d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+    expect(d.connected).toBe(true);
+
+    fire('error');
+    expect(d.connected).toBe(false);
+    expect(disconnected).toHaveBeenCalledTimes(1);
+
+    // A second error while already disconnected must not double-notify.
+    fire('error');
+    expect(disconnected).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears a pending retry timer on a successful reconnect so a stale retry cannot fire', async () => {
+    const d = new TuyapiDevice(opts, log);
+    connect.mockRejectedValueOnce(new Error('refused'));
+    d.connect();
+    await vi.advanceTimersByTimeAsync(0); // first attempt fails and arms a retry timer
+
+    fire('connected'); // reconnect succeeds via some other path
+
+    // If the stale retry timer were not cleared it would fire connect() again here.
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(connect).toHaveBeenCalledTimes(1);
+  });
+
   it('sends one set() call per datapoint, not a batched write', async () => {
     // This firmware silently ignores multiple:true batched writes on real
     // hardware — see the comment on TuyapiDevice.set(). One call per dp is

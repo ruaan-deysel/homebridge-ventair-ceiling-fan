@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildMatterAccessory, matterUuid } from '../src/matter.js';
+import { buildMatterAccessory, matterUuid, MatterFanBridge } from '../src/matter.js';
+import { FakeTuyaDevice } from '../src/tuya/device.js';
 
 const matterApi = {
   deviceTypes: { Fan: 'FanDevice' },
@@ -135,5 +136,91 @@ describe('buildMatterAccessory', () => {
 
     acc.handlers!.fanControl!.fanModeChange!({ fanMode: 0, oldFanMode: 1 } as never, undefined);
     expect(setPower).toHaveBeenNthCalledWith(3, false);
+  });
+
+  it('maps Low/Medium/High fanModeChange onto a speed step, not just power', () => {
+    const setPower = vi.fn();
+    const setPercent = vi.fn();
+    const acc = buildMatterAccessory(matterApi as never, 'uuid-1', device as never, {
+      power: false, speedStep: 0, mode: 'normal', direction: 'forward',
+      lightPower: false, lightBrightness: 100,
+    }, { setPower, setPercent });
+
+    // FALLBACK_FAN_MODE: Off 0, Low 1, Medium 2, High 3.
+    acc.handlers!.fanControl!.fanModeChange!({ fanMode: 1, oldFanMode: 0 } as never, undefined); // Low
+    acc.handlers!.fanControl!.fanModeChange!({ fanMode: 2, oldFanMode: 1 } as never, undefined); // Medium
+    acc.handlers!.fanControl!.fanModeChange!({ fanMode: 3, oldFanMode: 2 } as never, undefined); // High
+
+    expect(setPercent).toHaveBeenCalledTimes(3);
+    expect(setPower).not.toHaveBeenCalled();
+    const [low, medium, high] = setPercent.mock.calls.map(([p]) => p as number);
+    expect(low).toBeGreaterThan(0);
+    expect(medium).toBeGreaterThan(low);
+    expect(high).toBeGreaterThan(medium);
+  });
+});
+
+describe('MatterFanBridge', () => {
+  const bridgeDevice = { id: 'a'.repeat(20), key: 'k'.repeat(16), name: 'Bridge Fan' };
+
+  function harness() {
+    const matterApi = {
+      deviceTypes: { Fan: 'FanDevice' },
+      clusterNames: { OnOff: 'onOff', FanControl: 'fanControl' },
+      updateAccessoryState: vi.fn().mockResolvedValue(undefined),
+    };
+    const log = { debug: vi.fn(), warn: vi.fn() };
+    const transport = new FakeTuyaDevice();
+    const bridge = new MatterFanBridge(matterApi as never, bridgeDevice as never, 'hap-uuid', transport, log as never);
+    return { matterApi, log, transport, bridge };
+  }
+
+  it('rolls back optimistic state on a failed write before pushing to Matter', async () => {
+    const { matterApi, log, transport, bridge } = harness();
+    await transport.connect();
+    vi.spyOn(transport, 'set').mockRejectedValue(new Error('device unreachable'));
+
+    const acc = bridge.buildAccessory();
+    acc.handlers!.onOff!.on!({}, undefined);
+
+    await vi.waitFor(() => expect(log.warn).toHaveBeenCalled());
+    // Matter must have been pushed the rolled-back (still off) state, not the
+    // optimistic on-state the failed write never actually achieved.
+    const onOffCall = matterApi.updateAccessoryState.mock.calls.find(([, cluster]) => cluster === 'onOff');
+    expect(onOffCall?.[2]).toEqual({ onOff: false });
+    expect(bridge.buildAccessory().clusters!.onOff!.onOff).toBe(false);
+  });
+
+  it('pushes fanControl even when the onOff cluster update rejects', async () => {
+    const { matterApi, log, transport, bridge } = harness();
+    await transport.connect();
+    matterApi.updateAccessoryState.mockImplementation((_uuid: string, cluster: string) =>
+      cluster === 'onOff' ? Promise.reject(new Error('onOff failed')) : Promise.resolve(undefined),
+    );
+
+    const acc = bridge.buildAccessory();
+    acc.handlers!.onOff!.on!({}, undefined);
+
+    await vi.waitFor(() => expect(matterApi.updateAccessoryState).toHaveBeenCalledWith(bridge.uuid, 'fanControl', expect.anything()));
+    // Both clusters were attempted — a rejection on onOff did not short-circuit fanControl.
+    const clustersCalled = matterApi.updateAccessoryState.mock.calls.map(([, cluster]) => cluster);
+    expect(clustersCalled).toContain('onOff');
+    expect(clustersCalled).toContain('fanControl');
+    expect(log.debug).toHaveBeenCalledWith(expect.stringContaining('onOff'), 'onOff failed');
+  });
+
+  it('catches a rejected applyUpdate from onDps instead of an unhandled rejection', async () => {
+    const { matterApi, log, transport } = harness();
+    matterApi.updateAccessoryState.mockImplementation(() => {
+      throw new Error('sync boom');
+    });
+    // FakeTuyaDevice.emitDps drives the onDps listener MatterFanBridge registered in its
+    // constructor — the same fire-and-forget path a real device push would take.
+    transport.emitDps({ 1: true });
+
+    await vi.waitFor(() => expect(log.debug).toHaveBeenCalledWith(
+      expect.stringContaining('applyUpdate failed'),
+      'sync boom',
+    ));
   });
 });

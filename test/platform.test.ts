@@ -13,6 +13,7 @@ vi.mock('../src/accessory.js', () => ({
 
 const { HomebridgeVentairCeilingFan } = await import('../src/platform.js');
 const { CeilingFanAccessory } = await import('../src/accessory.js');
+const { discover } = await import('../src/tuya/discovery.js');
 
 function harness() {
   const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), success: vi.fn(), log: vi.fn() };
@@ -121,6 +122,30 @@ describe('platform lifecycle', () => {
     const registered = api.registerPlatformAccessories.mock.calls.map(([, , accessories]) => accessories[0].displayName);
     expect(registered).toContain('Good Fan');
     expect(registered).not.toContain('Broken Fan');
+  });
+
+  it('still sets up a device with a static ip when discovery throws', async () => {
+    const { log, api, handlers } = harness();
+    (discover as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('network down'));
+
+    // resolveAddresses() only calls discover() at all if some device is missing an
+    // explicit ip — mix a discovered-address device in alongside the static one so
+    // discovery is actually attempted (and fails).
+    const staticDevice = { ...device, id: 'c'.repeat(20), name: 'Static IP Fan', ip: '192.0.2.20' };
+    const discoveredDevice = { ...device, id: 'd'.repeat(20), name: 'Discovered Fan' };
+    new HomebridgeVentairCeilingFan(
+      log as never,
+      { platform: 'x', devices: [staticDevice, discoveredDevice] } as never,
+      api as never,
+    );
+    await handlers.didFinishLaunching?.();
+
+    await vi.waitFor(() => expect(api.registerPlatformAccessories).toHaveBeenCalled());
+    const registered = api.registerPlatformAccessories.mock.calls.map(([, , accessories]) => accessories[0].displayName);
+    expect(registered).toContain('Static IP Fan');
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('discovery'), 'network down');
+    // The failure was contained — it did not propagate to the top-level catch.
+    expect(log.error).not.toHaveBeenCalled();
   });
 });
 

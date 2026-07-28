@@ -52,7 +52,15 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
       return;
     }
 
-    const addresses = await this.resolveAddresses();
+    // A discovery failure must not abort setup for devices with a static `ip` — same
+    // per-device containment policy as parseDevices() and the setupDevice() try/catch below.
+    let addresses: Map<string, string>;
+    try {
+      addresses = await this.resolveAddresses();
+    } catch (error) {
+      this.log.warn('Device discovery failed:', error instanceof Error ? error.message : error);
+      addresses = new Map();
+    }
 
     for (const device of this.devices) {
       const uuid = this.api.hap.uuid.generate(device.id);

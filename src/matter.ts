@@ -132,7 +132,22 @@ export function buildMatterAccessory(
             callbacks.setPercent(percentSetting);
           }
         },
-        fanModeChange: ({ fanMode }) => callbacks.setPower(fanMode !== FALLBACK_FAN_MODE.Off),
+        // Non-Off modes must drive a speed, not just power — a Matter controller setting
+        // fanMode to Low/Medium/High otherwise has no way to select speed. Mirrors the
+        // step ranges fanModeForStep() maps Low/Medium/High from, so the two are consistent.
+        fanModeChange: ({ fanMode }) => {
+          const mode = matterApi.types?.FanControl?.FanMode ?? FALLBACK_FAN_MODE;
+          if (fanMode === mode.Off) {
+            callbacks.setPower(false);
+            return;
+          }
+          const step = fanMode === mode.Low ? 1 : fanMode === mode.Medium ? 3 : fanMode === mode.High ? 5 : undefined;
+          if (step === undefined) {
+            callbacks.setPower(true);
+            return;
+          }
+          callbacks.setPercent(stepToPercent(step));
+        },
       },
     },
   };
@@ -180,7 +195,11 @@ export class MatterFanBridge {
     private readonly log: Pick<Logging, 'debug' | 'warn'>,
   ) {
     this.uuid = matterUuid(device.id);
-    this.transport.onDps(dps => void this.applyUpdate(dps));
+    this.transport.onDps(dps => {
+      this.applyUpdate(dps).catch(error => {
+        this.log.debug(`[${this.device.name}] Matter applyUpdate failed:`, error instanceof Error ? error.message : error);
+      });
+    });
   }
 
   /** The descriptor to pass to `matterApi.registerPlatformAccessories`. */
@@ -189,10 +208,15 @@ export class MatterFanBridge {
   }
 
   private async write(patch: Partial<FanState>): Promise<void> {
+    const previous = {} as Partial<FanState>;
+    (Object.keys(patch) as (keyof FanState)[]).forEach(key => {
+      (previous as Record<keyof FanState, unknown>)[key] = this.state[key];
+    });
     Object.assign(this.state, patch);
     try {
       await this.transport.set(toDps(patch, this.dpsOptions));
     } catch (error) {
+      Object.assign(this.state, previous);
       this.log.warn(`[${this.device.name}] Matter write failed:`, error instanceof Error ? error.message : error);
     }
     await this.pushState();
@@ -209,11 +233,19 @@ export class MatterFanBridge {
 
   private async pushState(): Promise<void> {
     const { onOff, fanControl } = matterClusters(this.matterApi, this.state);
-    try {
-      await this.matterApi.updateAccessoryState(this.uuid, this.matterApi.clusterNames.OnOff, onOff);
-      await this.matterApi.updateAccessoryState(this.uuid, this.matterApi.clusterNames.FanControl, fanControl);
-    } catch (error) {
-      this.log.debug(`[${this.device.name}] Matter state push failed:`, error instanceof Error ? error.message : error);
-    }
+    const results = await Promise.allSettled([
+      this.matterApi.updateAccessoryState(this.uuid, this.matterApi.clusterNames.OnOff, onOff),
+      this.matterApi.updateAccessoryState(this.uuid, this.matterApi.clusterNames.FanControl, fanControl),
+    ]);
+    const clusterNames = ['onOff', 'fanControl'] as const;
+    results.forEach((result, i) => {
+      if (result.status === 'rejected') {
+        const error = result.reason;
+        this.log.debug(
+          `[${this.device.name}] Matter state push failed for ${clusterNames[i]}:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    });
   }
 }
