@@ -4,7 +4,15 @@ vi.mock('../src/tuya/discovery.js', () => ({
   discover: vi.fn().mockResolvedValue([{ id: 'a'.repeat(20), ip: '192.0.2.11', version: '3.3' }]),
 }));
 
+// Platform lifecycle tests care about discovery/register/unregister wiring, not accessory
+// internals — mocking this out decouples the two, which is also what let one throwing
+// accessory be simulated below without needing real HAP service internals.
+vi.mock('../src/accessory.js', () => ({
+  CeilingFanAccessory: vi.fn(),
+}));
+
 const { HomebridgeVentairCeilingFan } = await import('../src/platform.js');
+const { CeilingFanAccessory } = await import('../src/accessory.js');
 
 function harness() {
   const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), success: vi.fn(), log: vi.fn() };
@@ -93,6 +101,26 @@ describe('platform lifecycle', () => {
     await handlers.didFinishLaunching?.();
     expect(api.registerPlatformAccessories).not.toHaveBeenCalled();
     expect(log.warn).toHaveBeenCalled();
+  });
+
+  it('sets up remaining devices when one device setup throws', async () => {
+    const { log, api, handlers } = harness();
+    (CeilingFanAccessory as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error('boom');
+    });
+
+    const devices = [
+      { ...device, id: 'a'.repeat(20), name: 'Broken Fan' },
+      { ...device, id: 'b'.repeat(20), name: 'Good Fan' },
+    ];
+    new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices } as never, api as never);
+    await handlers.didFinishLaunching?.();
+    await vi.waitFor(() => expect(api.registerPlatformAccessories).toHaveBeenCalled());
+
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Broken Fan'), expect.anything());
+    const registered = api.registerPlatformAccessories.mock.calls.map(([, , accessories]) => accessories[0].displayName);
+    expect(registered).toContain('Good Fan');
+    expect(registered).not.toContain('Broken Fan');
   });
 });
 

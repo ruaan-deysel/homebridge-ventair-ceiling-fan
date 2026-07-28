@@ -24,6 +24,11 @@ function harness(overrides: Record<string, unknown> = {}) {
     displayName: name,
   });
 
+  // Keyed by `${type}:${subtype ?? ''}` so a second construction against the same
+  // accessory (simulating a Homebridge restart restoring from cache) finds services
+  // already attached instead of re-adding them — the bug this harness now guards.
+  const services = new Map<string, ReturnType<typeof service>>();
+
   const platform = {
     log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     Service: { AccessoryInformation: 'Info', Fanv2: 'Fanv2', Lightbulb: 'Lightbulb', Switch: 'Switch' },
@@ -38,12 +43,24 @@ function harness(overrides: Record<string, unknown> = {}) {
     api: { hap: { HapStatusError: class extends Error {}, HAPStatus: { SERVICE_COMMUNICATION_FAILURE: -70402 } } },
   };
 
+  const addService = vi.fn((t: string, name?: string, subtype?: string) => {
+    const svc = service(name ?? t);
+    services.set(`${t}:${subtype ?? ''}`, svc);
+    return svc;
+  });
+
   const accessory = {
     context: {} as Record<string, unknown>,
-    getService: () => undefined,
-    addService: (t: string, name?: string) => service(name ?? t),
-    getServiceById: () => undefined,
-    removeService: vi.fn(),
+    getService: (t: string) => services.get(`${t}:`),
+    addService,
+    getServiceById: (t: string, subtype: string) => services.get(`${t}:${subtype}`),
+    removeService: vi.fn((svc: unknown) => {
+      for (const [key, value] of services) {
+        if (value === svc) {
+          services.delete(key);
+        }
+      }
+    }),
   };
 
   const device = { id: 'a'.repeat(20), key: 'k'.repeat(16), name: 'Family Room Fan', hasLight: false, exposeModeSwitches: false, version: '3.3' as const, ...overrides };
@@ -101,5 +118,24 @@ describe('fan control', () => {
     new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
 
     expect(handlers.get('Sleep.On')).toBeUndefined();
+  });
+
+  it('restoring from cache does not duplicate or throw on the Sleep switch', async () => {
+    const { platform, accessory, device, handlers } = harness({ exposeModeSwitches: true });
+
+    const transport1 = new FakeTuyaDevice();
+    await transport1.connect();
+    new CeilingFanAccessory(platform as never, accessory as never, device as never, transport1);
+    const callsAfterFirst = (accessory.addService as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    // Simulates a Homebridge restart: same accessory object, already carrying the
+    // Switch service from the first construction.
+    const transport2 = new FakeTuyaDevice();
+    await transport2.connect();
+    expect(() => new CeilingFanAccessory(platform as never, accessory as never, device as never, transport2))
+      .not.toThrow();
+
+    expect((accessory.addService as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAfterFirst);
+    expect(handlers.get('Sleep.On')).toBeDefined();
   });
 });

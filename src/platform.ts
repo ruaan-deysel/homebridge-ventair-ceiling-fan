@@ -56,37 +56,47 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
 
     for (const device of this.devices) {
       const uuid = this.api.hap.uuid.generate(device.id);
-      const ip = device.ip ?? addresses.get(device.id);
-
-      if (!ip) {
-        // Not fatal: tuyapi's own find() retries in the background.
-        this.log.warn(`Could not discover an address for "${device.name}"; it will keep retrying.`);
+      // One bad fan must cost one fan, not the bridge — same philosophy as parseDevices.
+      // uuid is still recorded below even on failure, so a transient setup error doesn't
+      // also make removeStaleAccessories() delete the accessory from the Home app.
+      try {
+        await this.setupDevice(device, uuid, addresses);
+      } catch (error) {
+        this.log.error(`Setup failed for "${device.name}":`, error instanceof Error ? error.message : error);
       }
-
-      const transport = new TuyapiDevice({ id: device.id, key: device.key, version: device.version, ip }, this.log);
-
-      const existing = this.accessories.get(uuid);
-      if (existing) {
-        this.log.info('Restoring accessory from cache:', existing.displayName);
-        existing.context.device = device;
-        new CeilingFanAccessory(this, existing, device, transport);
-      } else {
-        this.log.info('Adding new ceiling fan:', device.name);
-        const accessory = new this.api.platformAccessory(device.name, uuid, this.api.hap.Categories.FAN);
-        accessory.context.device = device;
-        new CeilingFanAccessory(this, accessory, device, transport);
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-      }
-
       this.discoveredCacheUUIDs.push(uuid);
-
-      if (device.exposeMatter) {
-        await this.registerMatter(device, transport);
-      }
     }
 
     this.removeStaleAccessories();
     this.removeStaleMatterAccessories();
+  }
+
+  private async setupDevice(device: VentairDevice, uuid: string, addresses: Map<string, string>): Promise<void> {
+    const ip = device.ip ?? addresses.get(device.id);
+
+    if (!ip) {
+      // Not fatal: tuyapi's own find() retries in the background.
+      this.log.warn(`Could not discover an address for "${device.name}"; it will keep retrying.`);
+    }
+
+    const transport = new TuyapiDevice({ id: device.id, key: device.key, version: device.version, ip }, this.log);
+
+    const existing = this.accessories.get(uuid);
+    if (existing) {
+      this.log.info('Restoring accessory from cache:', existing.displayName);
+      existing.context.device = device;
+      new CeilingFanAccessory(this, existing, device, transport);
+    } else {
+      this.log.info('Adding new ceiling fan:', device.name);
+      const accessory = new this.api.platformAccessory(device.name, uuid, this.api.hap.Categories.FAN);
+      accessory.context.device = device;
+      new CeilingFanAccessory(this, accessory, device, transport);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+    }
+
+    if (device.exposeMatter) {
+      await this.registerMatter(device, transport);
+    }
   }
 
   /**

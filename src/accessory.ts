@@ -71,17 +71,29 @@ export class CeilingFanAccessory {
         .onGet(() => this.read(() => this.state.lightBrightness));
     }
 
+    const sleepSubtype = 'sleep';
     if (device.exposeModeSwitches) {
       // Hardware has exactly two reachable modes (Normal, Sleep) — one switch covers it.
       // On writes Sleep, off writes Normal. Do not add Nature/Smart switches: writing
       // anything other than Normal/Sleep silently lands on Sleep on the real hardware.
+      // Switch is a generic HAP service type, so a stable subtype is required — on
+      // restart Homebridge restores the accessory with this service already attached,
+      // and a bare addService() throws "same UUID ... without a unique subtype".
       const label = 'Sleep';
-      this.sleepSwitch = this.accessory.addService(S.Switch, label);
+      this.sleepSwitch = this.accessory.getServiceById(S.Switch, sleepSubtype)
+        ?? this.accessory.addService(S.Switch, label, sleepSubtype);
       this.sleepSwitch.setCharacteristic(Characteristic.Name, label);
       this.sleepSwitch.setCharacteristic(Characteristic.ConfiguredName, `${device.name} Sleep`);
       this.sleepSwitch.getCharacteristic(Characteristic.On)
         .onSet(v => this.write({ mode: v ? MODE_SLEEP : MODE_NORMAL }).then(() => this.syncModeSwitch()))
         .onGet(() => this.read(() => this.state.mode === MODE_SLEEP));
+    } else {
+      // exposeModeSwitches turned off after being on: the cached accessory still
+      // carries the switch — drop it instead of leaving a dead tile forever.
+      const stale = this.accessory.getServiceById(S.Switch, sleepSubtype);
+      if (stale) {
+        this.accessory.removeService(stale);
+      }
     }
 
     this.transport.onDps(dps => this.applyUpdate(dps));
