@@ -690,9 +690,10 @@ import { parseDevices } from '../src/config.js';
 
 const log = () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() });
 
+// Fixtures are synthetic. Never paste a real local key into a test file.
 const valid = {
   id: 'bf01000000000000000a',
-  key: 'REDACTED-KEY-PURGED'.replace(/./g, 'x'), // 16 chars, no real key in tests
+  key: 'x'.repeat(16),
   name: 'Family Room Fan',
 };
 
