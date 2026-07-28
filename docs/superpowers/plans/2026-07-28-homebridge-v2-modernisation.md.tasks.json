@@ -1,6 +1,6 @@
 {
   "planPath": "docs/superpowers/plans/2026-07-28-homebridge-v2-modernisation.md",
-  "lastUpdated": "2026-07-28T13:10:00+10:00",
+  "lastUpdated": "2026-07-28T14:00:00+10:00",
   "tasks": [
     {
       "id": 11,
@@ -65,7 +65,7 @@
     {
       "id": 8,
       "subject": "Task #8: Corrected HomeKit modelling in accessory.ts",
-      "status": "in_progress",
+      "status": "completed",
       "blockedBy": [
         3,
         5
@@ -75,7 +75,7 @@
     {
       "id": 9,
       "subject": "Task #9: Custom settings UI with scan and key fetch",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         6
       ],
