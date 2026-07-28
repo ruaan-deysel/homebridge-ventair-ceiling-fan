@@ -55,8 +55,8 @@
     "semantic_hash": ""
   },
   "docs/superpowers/specs/2026-07-28-homebridge-v2-modernisation-design.md": {
-    "mtime": 1785205057.8849757,
-    "ast_hash": "30fb709be8e1f0c5f6ff016fd40c5fe7",
+    "mtime": 1785206223.5287724,
+    "ast_hash": "cb44bd68423f29482872dad07b1fb757",
     "semantic_hash": ""
   },
   "readme/ceiling-fan.jpg": {
@@ -70,8 +70,33 @@
     "semantic_hash": ""
   },
   "docs/superpowers/plans/2026-07-28-homebridge-v2-modernisation.md": {
-    "mtime": 1785205835.6606631,
-    "ast_hash": "c5f614cd414906be3c6960bf900823aa",
+    "mtime": 1785206268.4169426,
+    "ast_hash": "decf4fd7b39428fd0ee5abeb6933260c",
+    "semantic_hash": ""
+  },
+  "scripts/dump-schema.mjs": {
+    "mtime": 1785205930.6746545,
+    "ast_hash": "b17023ad97981df7b3e366d98e9bdbdd",
+    "semantic_hash": ""
+  },
+  "scripts/poll-modes.mjs": {
+    "mtime": 1785206028.1069462,
+    "ast_hash": "d6860020d6087a23402602c632d75ab8",
+    "semantic_hash": ""
+  },
+  "scripts/probe-modes.mjs": {
+    "mtime": 1785206116.8258398,
+    "ast_hash": "24e3e0d01a34acea56bf1ccb03e9c61d",
+    "semantic_hash": ""
+  },
+  "scripts/probe2.mjs": {
+    "mtime": 1785206167.7443569,
+    "ast_hash": "3446ba44b23348edcc09a320f4820226",
+    "semantic_hash": ""
+  },
+  ".superpowers/sdd/2026-07-28-homebridge-v2-modernisation/progress.md": {
+    "mtime": 1785205909.190074,
+    "ast_hash": "683f71438db09d7f16693efb43d39cd5",
     "semantic_hash": ""
   }
 }
