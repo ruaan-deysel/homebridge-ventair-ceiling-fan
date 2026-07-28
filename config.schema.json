@@ -1,0 +1,63 @@
+{
+  "pluginAlias": "HomebridgeVentairCeilingFan",
+  "pluginType": "platform",
+  "singular": true,
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "required": true,
+        "default": "Skyfan DC Ceiling Fan"
+      },
+      "devices": {
+        "type": "array",
+        "title": "Devices",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "title": "ID",
+              "description": "Tuya device ID",
+              "required": true
+            },
+            "key": {
+              "type": "string",
+              "title": "Key",
+              "description": "Tuya device key",
+              "required": true
+            },
+            "ip": {
+              "type": "string",
+              "title": "IP",
+              "description": "Tuya device IP",
+              "required": false
+            },
+            "version": {
+              "type": "string",
+              "title": "Version",
+              "description": "Tuya device version",
+              "default": "3.3",
+              "required": false
+            },
+            "name": {
+              "type": "string",
+              "title": "Device Name",
+              "description": "Name of the device",
+              "required": true,
+              "default": "Ventair Skyfan DC Ceiling Fan"
+            },
+            "hasLight": {
+              "type": "boolean",
+              "title": "Has Light",
+              "description": "Device has a light ?",
+              "required": true
+            }
+          }
+        }
+      }
+    }
+  }
+}
