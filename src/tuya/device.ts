@@ -14,7 +14,13 @@ export interface TuyaDevice {
   disconnect(): void;
   set(dps: Record<string, DpValue>): Promise<void>;
   get(): Promise<Record<string, DpValue>>;
-  onDps(listener: DpsListener): void;
+  /**
+   * Returns a disposer that detaches this listener. Discovery only runs once today so
+   * nothing currently calls it, but every accessory/bridge that subscribes in its
+   * constructor must have a way to detach if it's ever replaced on the same transport —
+   * without this, a re-run stacks listeners forever on the shared connection.
+   */
+  onDps(listener: DpsListener): () => void;
   onConnected(listener: () => void): void;
   onDisconnected(listener: () => void): void;
 }
@@ -48,8 +54,14 @@ export class FakeTuyaDevice implements TuyaDevice {
     return { ...this.state };
   }
 
-  onDps(l: DpsListener): void {
+  onDps(l: DpsListener): () => void {
     this.dpsListeners.push(l);
+    return () => {
+      const i = this.dpsListeners.indexOf(l);
+      if (i !== -1) {
+        this.dpsListeners.splice(i, 1);
+      }
+    };
   }
 
   onConnected(l: () => void): void {

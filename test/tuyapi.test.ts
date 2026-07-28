@@ -122,13 +122,26 @@ describe('reconnect supervision', () => {
   });
 
   it('first retry delay is ~1s, not 2s', async () => {
+    // Asserts the ACTUAL scheduled timer delay (via a setTimeout spy), not `nextDelayMs`
+    // read back after the attempt counter has already incremented — that indirect check
+    // can't tell apart "delay computed before incrementing attempt" (correct) from
+    // "delay computed after" (a real bug: it would double every scheduled delay while
+    // `nextDelayMs` afterwards still reads the same either way).
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
     const d = new TuyapiDevice(opts, log);
     connect.mockRejectedValue(new Error('refused'));
     d.connect();
     await vi.advanceTimersByTimeAsync(0);
-    // jitter is 50-100% of nextDelayMs; after the first failure nextDelayMs is 2s
-    // (attempt incremented to 1), so the delay just scheduled was jitter(1s).
-    expect(d.nextDelayMs).toBe(2000);
+
+    const scheduledDelays = setTimeoutSpy.mock.calls
+      .map(([, delay]) => delay)
+      .filter((delay): delay is number => typeof delay === 'number' && delay > 0);
+    expect(scheduledDelays.length).toBeGreaterThan(0);
+    const armedDelay = scheduledDelays[scheduledDelays.length - 1];
+    // jitter(1s) = 1000 * (0.5 + rand/2) => [500, 1000]. A buggy 2s delay would fall
+    // in [1000, 2000] instead — outside this range except at the single boundary point.
+    expect(armedDelay).toBeGreaterThanOrEqual(500);
+    expect(armedDelay).toBeLessThan(1000);
   });
 
   it('marks disconnected and notifies listeners on a transport error, not just on the disconnected event', async () => {
@@ -240,5 +253,50 @@ describe('reconnect supervision', () => {
     get.mockImplementationOnce(async () => false);
 
     await expect(d.set({ '1': true })).rejects.toThrow(/was not applied/i);
+  });
+
+  it('coalesces rapid successive writes: only the last value reaches the transport, and superseded writes drop quietly', async () => {
+    // Reproduces dragging the RotationSpeed slider (20→40→60→80→100 with no pause):
+    // each set() call is issued before the previous one's set+readback round trip has
+    // settled. Without coalescing, the backed-up writes' readbacks race and the
+    // caller's rollback then discards the user's actual final choice.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    const first = d.set({ '3': 2 }); // starts immediately — becomes "in flight"
+    const second = d.set({ '3': 3 }); // queued, then superseded before it ever sends
+    const third = d.set({ '3': 5 }); // supersedes `second`; the value that must land
+
+    // Superseded and in-flight writes both resolve quietly — no rejection, no
+    // unhandled rejection, nothing for the accessory's rollback path to react to.
+    await expect(first).resolves.toBeUndefined();
+    await expect(second).resolves.toBeUndefined();
+    await expect(third).resolves.toBeUndefined();
+
+    const valuesSent = set.mock.calls.map(([call]) => (call as { set: unknown }).set);
+    expect(valuesSent).not.toContain(3); // the superseded middle value never hit the wire
+    expect(valuesSent[valuesSent.length - 1]).toBe(5);
+    // The device's actual last state — and its verified readback — is the user's
+    // final chosen value, not whatever happened to be in flight when the burst started.
+    expect(lastWrittenValue['3']).toBe(5);
+  });
+
+  it('onDps returns a disposer that detaches the listener', async () => {
+    // Nothing replaces an accessory/bridge on a live transport today (discovery runs
+    // once), but a subscriber that IS replaced in the future must be able to detach —
+    // otherwise re-running setup stacks listeners on the same transport forever.
+    const d = new TuyapiDevice(opts, log);
+    const received: unknown[] = [];
+    const off = d.onDps(dps => received.push(dps));
+
+    const forward = handlers['data']?.[0];
+    forward?.({ dps: { '1': true } });
+    expect(received).toHaveLength(1);
+
+    off();
+    forward?.({ dps: { '1': false } });
+    expect(received).toHaveLength(1); // no further deliveries after detaching
   });
 });

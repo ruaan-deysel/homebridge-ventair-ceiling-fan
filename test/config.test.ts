@@ -57,4 +57,17 @@ describe('parseDevices', () => {
     const logged = JSON.stringify(l.warn.mock.calls);
     expect(logged).not.toContain(valid.key);
   });
+
+  it('never logs the key when the key itself is the invalid field', () => {
+    // The case the test above doesn't cover: an invalid NAME never put the key in
+    // harm's way in the first place (zod's error only echoes the field that's wrong,
+    // and the key was still valid there). Rejecting on a bad KEY is the case that
+    // actually risks the key ending up in `zod.prettifyError`'s message.
+    const l = log();
+    const badKey = 'too-short';
+    parseDevices({ devices: [{ ...valid, key: badKey }] }, l);
+    const logged = JSON.stringify(l.warn.mock.calls);
+    expect(logged).not.toContain(badKey);
+    expect(logged).not.toContain(valid.key);
+  });
 });

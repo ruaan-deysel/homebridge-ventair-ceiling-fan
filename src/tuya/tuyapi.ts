@@ -27,6 +27,17 @@ export class TuyapiDevice implements TuyaDevice {
   private stopped = false;
   private attempt = 0;
 
+  /** True while a `writeOnce()` patch is actually on the wire. */
+  private writing = false;
+  /**
+   * At most one queued patch: the newest `set()` call received while `writing` is true.
+   * A further call while this is already populated supersedes it — the superseded
+   * caller is resolved immediately (quietly, no error) since its optimistic state is
+   * about to be overwritten by the newer patch anyway. Only ever the LAST value the
+   * user chose is the one that actually reaches the device.
+   */
+  private pendingWrite: { dps: Record<string, DpValue>; resolve: () => void; reject: (error: unknown) => void } | null = null;
+
   constructor(private readonly opts: TuyapiOptions, private readonly log: Logging) {
     this.device = new TuyAPI({
       id: opts.id,
@@ -183,7 +194,48 @@ export class TuyapiDevice implements TuyaDevice {
    * responsiveness, at the cost of every successful write now taking one extra
    * round trip.
    */
+  /**
+   * Coalesces rapid successive writes so the last value the user chose is the value that
+   * actually reaches the fan. tuyapi serialises `set()` calls through its own internal
+   * queue, and each datapoint write is followed by a bounded readback (see `verifyWrite`)
+   * — under a rapid burst (e.g. dragging the RotationSpeed slider: 20→40→60→80→100 with
+   * no pause) an unbounded number of overlapping writes/readbacks would pile up behind
+   * whichever one is currently on the wire, and the readback timeout then fails the
+   * backed-up ones — which the caller's rollback then discards, silently dropping the
+   * user's final chosen value even though nothing actually diverged.
+   *
+   * Fix: only one write is ever in flight, and at most one more is queued behind it. A
+   * new call arriving while a write is queued replaces it outright (no merge) and
+   * resolves the call it replaced immediately, quietly, with no error — that caller's
+   * optimistic UI state is about to be overwritten by this newer patch anyway. The
+   * write that actually lands still gets the full readback verification below; this
+   * only decides which patches get sent, never whether a sent one is trusted.
+   */
   async set(dps: Record<string, DpValue>): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      if (this.writing) {
+        this.pendingWrite?.resolve();
+        this.pendingWrite = { dps, resolve, reject };
+        return;
+      }
+      this.writing = true;
+      this.runWrite(dps, resolve, reject);
+    });
+  }
+
+  private runWrite(dps: Record<string, DpValue>, resolve: () => void, reject: (error: unknown) => void): void {
+    this.writeOnce(dps).then(resolve, reject).finally(() => {
+      const next = this.pendingWrite;
+      this.pendingWrite = null;
+      if (next) {
+        this.runWrite(next.dps, next.resolve, next.reject);
+      } else {
+        this.writing = false;
+      }
+    });
+  }
+
+  private async writeOnce(dps: Record<string, DpValue>): Promise<void> {
     for (const [dp, value] of Object.entries(dps)) {
       if (!this.connectedState) {
         throw new Error(`[${this.opts.id}] cannot write: device is disconnected`);
@@ -225,8 +277,14 @@ export class TuyapiDevice implements TuyaDevice {
     return {};
   }
 
-  onDps(l: DpsListener): void {
+  onDps(l: DpsListener): () => void {
     this.dpsListeners.push(l);
+    return () => {
+      const i = this.dpsListeners.indexOf(l);
+      if (i !== -1) {
+        this.dpsListeners.splice(i, 1);
+      }
+    };
   }
 
   onConnected(l: () => void): void {
