@@ -27,7 +27,18 @@ function harness() {
         return undefined;
       }
       addService() {
-        return { setCharacteristic: () => ({ setCharacteristic: () => ({}) }), getCharacteristic: () => ({ onSet: () => ({ onGet: () => ({}) }), onGet: () => ({}) }) };
+        const characteristic: Record<string, unknown> = {
+          setProps() { return characteristic; },
+          onSet() { return characteristic; },
+          onGet() { return characteristic; },
+          updateValue() { return characteristic; },
+        };
+        const service: Record<string, unknown> = {
+          setCharacteristic() { return service; },
+          getCharacteristic: () => characteristic,
+          updateCharacteristic: () => service,
+        };
+        return service;
       }
     },
     registerPlatformAccessories: vi.fn(),
