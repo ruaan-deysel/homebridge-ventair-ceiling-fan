@@ -1,5 +1,47 @@
 # Task 17 — CI modernisation, release workflow, unhandled rejections, dependency alignment, README compliance
 
+## Fix round 1
+
+Review found only `src/platform.ts:173` was a genuine unhandled-rejection risk — `write()`
+(accessory.ts) and `write()`/`pushState()` (matter.ts) already caught all transport errors
+internally and always resolve, so the `.catch()` blocks added at accessory.ts:99 and
+matter.ts:165/169 were unreachable dead code.
+
+**Decision: removed the three dead handlers.** One handler (inside `write()`) beats three
+where two are decoration. Reverted `src/matter.ts` (`setPower`/`setPercent`) and
+`src/accessory.ts` (Sleep switch `onSet` chain) back to plain `void`/no-`.catch()`, each
+with a one-line comment pointing at `write()`'s own try/catch as the reason no local
+handling is needed.
+
+Test fixes:
+- `test/accessory.test.ts`: renamed the vacuous test to
+  `"write()'s internal catch logs a rejected transport write instead of throwing"` and
+  added a comment stating it's pinning `write()`'s behaviour, not the (now removed)
+  `.onSet` chain's. Assertion (`log.warn` called with `"write failed"`) was already correct
+  for this target — no assertion change needed, just the mislabeling was fixed.
+- `test/platform.test.ts`: added
+  `"catches and logs a rejected Matter unregister instead of an unhandled rejection"` —
+  makes `matter.unregisterPlatformAccessories` reject, asserts `discoverDevices()` (via
+  `didFinishLaunching`) still completes, `log.warn` is called with the specific
+  `"Removing stale Matter accessories failed:"` message, and `log.error` (the top-level
+  `discoverDevices().catch` handler) is never reached — confirming the rejection didn't
+  propagate. Hand-verified: reverting `platform.ts:173`'s try/catch back to
+  `void this.api.matter.unregisterPlatformAccessories(...)` fails this test (`log.warn`
+  never called) — confirmed by temporarily reverting and re-running.
+
+### Verification (round 1)
+
+`npx vitest run`:
+```
+ Test Files  8 passed (8)
+      Tests  74 passed (74)
+   Duration  565ms
+```
+
+`npm run lint`: clean (no output).
+
+`npm run build`: clean (no output).
+
 ## 1. GitHub Actions bumped
 
 `.github/workflows/ci.yml`:

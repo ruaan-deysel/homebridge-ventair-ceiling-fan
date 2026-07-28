@@ -96,9 +96,9 @@ export class CeilingFanAccessory {
       this.sleepSwitch.setCharacteristic(Characteristic.Name, label);
       this.sleepSwitch.setCharacteristic(Characteristic.ConfiguredName, `${device.name} Sleep`);
       this.sleepSwitch.getCharacteristic(Characteristic.On)
-        .onSet(v => this.write({ mode: v ? MODE_SLEEP : MODE_NORMAL }).then(() => this.syncModeSwitch()).catch(error => {
-          this.platform.log.warn(`[${this.device.name}] sleep switch sync failed:`, error instanceof Error ? error.message : error);
-        }))
+        // write() catches all transport errors internally and always resolves — see its
+        // own try/catch below. No .catch() needed here.
+        .onSet(v => this.write({ mode: v ? MODE_SLEEP : MODE_NORMAL }).then(() => this.syncModeSwitch()))
         .onGet(() => this.read(() => this.state.mode === MODE_SLEEP));
     } else {
       // exposeModeSwitches turned off after being on: the cached accessory still

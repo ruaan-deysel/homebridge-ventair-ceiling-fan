@@ -169,4 +169,22 @@ describe('Matter', () => {
     const [, , removed] = matter.unregisterPlatformAccessories.mock.calls[0];
     expect(removed).toEqual([staleMatter]);
   });
+
+  it('catches and logs a rejected Matter unregister instead of an unhandled rejection', async () => {
+    const { log, api, handlers, matter } = matterHarness();
+    matter.unregisterPlatformAccessories.mockRejectedValue(new Error('bridge unreachable'));
+    const platform = new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [device] } as never, api as never);
+
+    const staleMatter = { UUID: 'stale-matter-uuid', displayName: 'Removed Matter Fan' };
+    platform.configureMatterAccessory(staleMatter as never);
+
+    await handlers.didFinishLaunching?.();
+    await vi.waitFor(() => expect(matter.unregisterPlatformAccessories).toHaveBeenCalled());
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('stale Matter'),
+      'bridge unreachable',
+    );
+    // The rejection did not propagate to the top-level discoverDevices().catch handler.
+    expect(log.error).not.toHaveBeenCalled();
+  });
 });

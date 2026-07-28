@@ -162,15 +162,13 @@ export class MatterFanBridge {
   private readonly callbacks: MatterFanCallbacks = {
     setPower: on => {
       const speedStep = on && this.state.speedStep === 0 ? 1 : this.state.speedStep;
-      this.write(on ? { power: true, speedStep } : { power: false }).catch(error => {
-        this.log.warn(`[${this.device.name}] Matter setPower failed:`, error instanceof Error ? error.message : error);
-      });
+      // write() catches all transport errors internally and always resolves — see its
+      // own try/catch below. No .catch() needed here.
+      void this.write(on ? { power: true, speedStep } : { power: false });
     },
     setPercent: percent => {
       const step = percentToStep(percent);
-      this.write(step === 0 ? { power: false } : { power: true, speedStep: step }).catch(error => {
-        this.log.warn(`[${this.device.name}] Matter setPercent failed:`, error instanceof Error ? error.message : error);
-      });
+      void this.write(step === 0 ? { power: false } : { power: true, speedStep: step });
     },
   };
 

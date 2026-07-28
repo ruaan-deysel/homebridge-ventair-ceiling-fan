@@ -179,13 +179,15 @@ describe('fan control', () => {
     expect(switches[0]).toBe(subtyped);
   });
 
-  it('logs and does not throw when a transport write rejects', async () => {
+  it("write()'s internal catch logs a rejected transport write instead of throwing", async () => {
     const { platform, accessory, device, handlers } = harness({ exposeModeSwitches: true });
     const transport = new FakeTuyaDevice();
     await transport.connect();
     vi.spyOn(transport, 'set').mockRejectedValue(new Error('device unreachable'));
     new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
 
+    // Sleep.On's onSet chains write().then(syncModeSwitch) with no .catch of its own —
+    // it relies entirely on write() (src/accessory.ts) never rejecting.
     await expect(handlers.get('Sleep.On')?.onSet?.(true)).resolves.toBeUndefined();
     expect(platform.log.warn).toHaveBeenCalledWith(
       expect.stringContaining('write failed'),
