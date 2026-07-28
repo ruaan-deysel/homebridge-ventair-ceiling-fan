@@ -6,9 +6,11 @@ class VentairUiServer extends HomebridgePluginUiServer {
   constructor() {
     super();
 
+    // A single broadcast interval can miss a device; 28s gives multiple announcement
+    // cycles a chance without making the user wait too long for feedback.
     this.onRequest('/discover', async () => {
       try {
-        return await discover(12000);
+        return await discover(28_000);
       } catch (error) {
         throw new RequestError('Discovery failed', { message: error.message });
       }

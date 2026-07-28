@@ -17,7 +17,20 @@ Go to the Homebridge UI, Plugins screen and search for `homebridge-ventair-ceili
 
 ## Configuration
 
-To get your `Id` and `Key` ceiling fan, follow the instructions [Getting your keys](https://github.com/jasonacox/tinytuya/tree/master#setup-wizard---getting-local-keys)
+Open the plugin settings in the Homebridge UI. Every fan already in your config is listed
+there first — name, device ID, whether a local key is set, and its toggles — with no need
+to open `config.json`. From there you can:
+
+- **Scan** the network to find fans and badge each configured fan as found or not found
+  (a fan is never removed automatically just because a scan missed it).
+- **Paste a local key directly** into any fan — this always works and needs no cloud
+  credentials.
+- **Fetch keys from Tuya Cloud** using your Access ID/Secret, for one fan or all of them
+  at once. Tuya time-limits how long an IoT-portal project can pull device data, so cloud
+  fetch can eventually stop working for older projects — manual key entry is the
+  supported fallback, not an afterthought.
+
+To get your `Id` and `Key` the manual way, follow [Getting your keys](https://github.com/jasonacox/tinytuya/tree/master#setup-wizard---getting-local-keys).
 
 ## Matter (beta, opt-in)
 

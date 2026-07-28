@@ -3,7 +3,7 @@
   "pluginType": "platform",
   "singular": true,
   "customUi": true,
-  "headerDisplay": "Control Ventair Skyfan DC ceiling fans locally over your network. Use the Scan button to find fans, or fetch local keys from your Tuya IoT account.",
+  "headerDisplay": "Control Ventair Skyfan DC ceiling fans locally over your network. Your configured fans are listed below — scan to find more, or paste a local key directly into any fan.",
   "schema": {
     "type": "object",
     "properties": {

@@ -1,17 +1,38 @@
+<style>
+  .fan-row { border: 1px solid var(--bs-border-color, #dee2e6); border-radius: 0.375rem; padding: 0.75rem; margin-bottom: 0.5rem; }
+  .fan-row .fan-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .fan-row .fan-name-input { max-width: 220px; }
+  .fan-row .fan-id { font-family: monospace; font-size: 0.85em; opacity: 0.75; }
+  .fan-row .fan-toggles { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .fan-row .fan-key-row { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.5rem; flex-wrap: wrap; }
+  .fan-row .fan-key-row input { max-width: 220px; }
+  .fan-empty { text-align: center; padding: 2rem 1rem; opacity: 0.75; }
+  .spacer { flex: 1 1 auto; }
+</style>
+
 <div class="card">
-  <h5>Find your fans</h5>
-  <p class="text-muted small">
-    Scans the local network for Tuya devices. Your fans must be on the same network as Homebridge.
-  </p>
-  <button class="btn btn-primary" id="scan">Scan for fans</button>
-  <div id="scan-result" class="mt-3"></div>
+  <h5>Your fans</h5>
+  <div id="fan-list"></div>
 </div>
 
 <div class="card mt-3">
-  <h5>Fetch local keys</h5>
+  <h5>Scan the network</h5>
   <p class="text-muted small">
-    Local keys come from your Tuya IoT project. These credentials are used once for this
-    request and are <strong>not saved</strong> to your Homebridge config.
+    Scans for Tuya devices on the same network as Homebridge. Takes about 30 seconds.
+    A fan already in your config is never removed just because a scan misses it.
+  </p>
+  <button class="btn btn-primary" id="scan">Scan for fans</button>
+  <span id="scan-status" class="text-muted small ms-2"></span>
+</div>
+
+<div class="card mt-3">
+  <h5>Tuya cloud credentials</h5>
+  <p class="text-muted small">
+    Used to fetch local keys from your Tuya IoT project. Tuya time-limits access to
+    device data through the IoT portal, so cloud fetch can stop working over time — every
+    fan below also supports pasting its local key in directly, which always works.
+    These credentials are used for the request only and are <strong>never saved</strong>
+    to your Homebridge config.
   </p>
   <input class="form-control mb-2" id="clientId" placeholder="Access ID">
   <input class="form-control mb-2" id="secret" type="password" placeholder="Access Secret">
@@ -21,66 +42,279 @@
     <option value="cn">China</option>
     <option value="in">India</option>
   </select>
-  <button class="btn btn-primary" id="fetch">Fetch keys and fill config</button>
-  <div id="key-result" class="mt-3"></div>
+  <button class="btn btn-secondary" id="fetch-all">Fetch keys for all configured fans</button>
+  <span id="fetch-status" class="text-muted small ms-2"></span>
 </div>
 
 <script>
-  let discovered = [];
+  (() => {
+    // ---- state -------------------------------------------------------------
+    // `discovered`: every device ever seen by a scan this session, keyed by id — used
+    // to offer "Add" for devices found but not configured. Never cleared, only merged.
+    let discovered = new Map();
+    // `lastScanIds`: ids seen in the MOST RECENT scan, used only for the "Not found on
+    // network" badge on already-configured fans. A miss here never removes a fan.
+    let lastScanIds = null;
+    let platform = { platform: 'HomebridgeVentairCeilingFan', name: 'Skyfan DC Ceiling Fan', devices: [] };
+    let busy = false;
 
-  document.getElementById('scan').addEventListener('click', async () => {
-    const out = document.getElementById('scan-result');
-    out.textContent = 'Scanning, this takes about 12 seconds...';
-    try {
-      discovered = await homebridge.request('/discover');
-      out.innerHTML = discovered.length
-        ? '<ul>' + discovered.map(d => `<li>${d.id} — ${d.ip} (v${d.version})</li>`).join('') + '</ul>'
-        : 'No devices found. Check that Homebridge is on the same network as your fans.';
-    } catch (e) {
-      out.textContent = e.message;
+    // ---- helpers -------------------------------------------------------------
+    function el(tag, attrs = {}, children = []) {
+      const node = document.createElement(tag);
+      for (const [k, v] of Object.entries(attrs)) {
+        if (k === 'class') { node.className = v; }
+        else if (k.startsWith('on') && typeof v === 'function') { node.addEventListener(k.slice(2), v); }
+        else if (v !== undefined && v !== null) { node.setAttribute(k, v); }
+      }
+      for (const child of [].concat(children)) {
+        if (child === undefined || child === null) { continue; }
+        node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+      }
+      return node;
     }
-  });
 
-  document.getElementById('fetch').addEventListener('click', async () => {
-    const out = document.getElementById('key-result');
-    if (!discovered.length) {
-      out.textContent = 'Scan for fans first.';
-      return;
-    }
-    out.textContent = 'Contacting Tuya...';
-    try {
-      const devices = await homebridge.request('/keys', {
-        clientId: document.getElementById('clientId').value.trim(),
-        secret: document.getElementById('secret').value.trim(),
-        region: document.getElementById('region').value,
-        ids: discovered.map(d => d.id),
-      });
-
+    async function persist(message) {
       const config = await homebridge.getPluginConfig();
-      const platform = config[0] ?? { platform: 'HomebridgeVentairCeilingFan', name: 'Skyfan DC Ceiling Fan' };
-      // Preserve fields on devices that were already configured (e.g. exposeMatter,
-      // hasLight, ip, version) — a re-scan only refreshes id/name/key.
-      const existingById = new Map((platform.devices || []).map(d => [d.id, d]));
-      platform.devices = devices.map(d => {
-        const existing = existingById.get(d.id) ?? {};
-        return {
-          ...existing,
-          name: d.name,
-          id: d.id,
-          key: d.key,
-          hasLight: existing.hasLight ?? false,
-          exposeModeSwitches: existing.exposeModeSwitches ?? false,
-        };
-      });
-      await homebridge.updatePluginConfig([platform]);
+      const rest = config.slice(1);
+      await homebridge.updatePluginConfig([platform, ...rest]);
       await homebridge.savePluginConfig();
-
-      out.textContent = `Filled in ${devices.length} fan(s). Review the settings below and restart Homebridge.`;
-    } catch (e) {
-      out.textContent = e.message;
-    } finally {
-      // Clear the secret from the DOM as soon as it's been used, on success or failure.
-      document.getElementById('secret').value = '';
+      if (message) {
+        homebridge.toast.success(message);
+      }
     }
-  });
+
+    function setBusy(value) {
+      busy = value;
+      document.querySelectorAll('button').forEach(b => { b.disabled = value; });
+    }
+
+    // ---- rendering (DOM nodes + textContent only — device data is untrusted LAN input) --
+    function badgeFor(device) {
+      // No scan run yet, or the fan was seen in the most recent scan: just "Configured".
+      // Only a scan that ran and did NOT see this fan gets the warning badge — the fan
+      // itself is never touched either way.
+      if (lastScanIds !== null && !lastScanIds.has(device.id)) {
+        return el('span', { class: 'badge bg-warning text-dark' }, 'Not found on network');
+      }
+      return el('span', { class: 'badge bg-success' }, 'Configured');
+    }
+
+    function toggle(device, prop, label) {
+      const input = el('input', {
+        class: 'form-check-input',
+        type: 'checkbox',
+        onchange: async e => {
+          device[prop] = e.target.checked;
+          await persist();
+        },
+      });
+      input.checked = Boolean(device[prop]);
+      return el('div', { class: 'form-check form-check-inline' }, [input, el('label', { class: 'form-check-label' }, label)]);
+    }
+
+    function configuredRow(device) {
+      const nameInput = el('input', {
+        class: 'form-control form-control-sm fan-name-input',
+        value: device.name,
+        onchange: async e => {
+          device.name = e.target.value;
+          await persist();
+        },
+      });
+      nameInput.value = device.name;
+
+      const ipInput = el('input', {
+        class: 'form-control form-control-sm fan-name-input',
+        placeholder: 'Auto (leave blank)',
+        onchange: async e => {
+          const value = e.target.value.trim();
+          if (value) { device.ip = value; } else { delete device.ip; }
+          await persist();
+        },
+      });
+      ipInput.value = device.ip || '';
+
+      const keyInput = el('input', { class: 'form-control form-control-sm', type: 'password', placeholder: 'Paste local key' });
+      const saveKeyBtn = el('button', {
+        class: 'btn btn-sm btn-primary',
+        onclick: async () => {
+          const value = keyInput.value.trim();
+          if (value.length !== 16) {
+            homebridge.toast.error('Local keys are exactly 16 characters', device.name);
+            return;
+          }
+          device.key = value;
+          keyInput.value = '';
+          await persist(`Key saved for ${device.name}`);
+          renderAll();
+        },
+      }, 'Save key');
+
+      const fetchKeyBtn = el('button', {
+        class: 'btn btn-sm btn-primary',
+        title: 'Fetch this fan’s local key from Tuya Cloud using the credentials below',
+        onclick: () => fetchKeysFor([device.id]),
+      }, 'Fetch from Tuya Cloud');
+
+      const removeBtn = el('button', {
+        class: 'btn btn-sm btn-outline-danger',
+        onclick: async () => {
+          if (!confirm(`Remove ${device.name} from the config?`)) { return; }
+          platform.devices = platform.devices.filter(d => d.id !== device.id);
+          await persist(`Removed ${device.name}`);
+          renderAll();
+        },
+      }, 'Remove');
+
+      const keyStatus = el('span', { class: 'small text-muted' }, device.key ? 'Key set' : 'No key set');
+
+      return el('div', { class: 'fan-row' }, [
+        el('div', { class: 'fan-head' }, [
+          nameInput,
+          el('span', { class: 'fan-id' }, device.id),
+          badgeFor(device),
+          el('div', { class: 'spacer' }),
+          removeBtn,
+        ]),
+        el('div', { class: 'fan-key-row' }, [keyStatus, keyInput, saveKeyBtn, fetchKeyBtn]),
+        el('div', { class: 'fan-toggles' }, [
+          toggle(device, 'hasLight', 'Has light'),
+          toggle(device, 'exposeModeSwitches', 'Mode switches'),
+          toggle(device, 'exposeMatter', 'Expose to Matter'),
+          el('label', { class: 'small text-muted mb-0 ms-2' }, ['Pinned IP: ', ipInput]),
+        ]),
+      ]);
+    }
+
+    function discoveredOnlyRow(id, info) {
+      const addBtn = el('button', {
+        class: 'btn btn-sm btn-primary',
+        onclick: async () => {
+          platform.devices.push({
+            id,
+            name: `Fan ${id.slice(-4)}`,
+            key: '',
+            ip: info.ip,
+            version: info.version,
+            hasLight: false,
+            exposeModeSwitches: false,
+            exposeMatter: false,
+          });
+          await persist(`Added fan ${id.slice(-4)}`);
+          renderAll();
+        },
+      }, 'Add to config');
+
+      return el('div', { class: 'fan-row' }, [
+        el('div', { class: 'fan-head' }, [
+          el('span', { class: 'fan-id' }, id),
+          el('span', { class: 'small text-muted' }, `${info.ip} • v${info.version}`),
+          el('span', { class: 'badge bg-secondary' }, 'Not configured'),
+          el('div', { class: 'spacer' }),
+          addBtn,
+        ]),
+      ]);
+    }
+
+    function renderAll() {
+      const list = document.getElementById('fan-list');
+      list.textContent = '';
+
+      const configuredIds = new Set(platform.devices.map(d => d.id));
+      const discoveredOnly = [...discovered.entries()].filter(([id]) => !configuredIds.has(id));
+
+      if (platform.devices.length === 0 && discoveredOnly.length === 0) {
+        list.appendChild(el('div', { class: 'fan-empty' }, 'No fans configured yet — scan to find them, or add one manually below.'));
+        return;
+      }
+
+      for (const device of platform.devices) {
+        list.appendChild(configuredRow(device));
+      }
+      for (const [id, info] of discoveredOnly) {
+        list.appendChild(discoveredOnlyRow(id, info));
+      }
+    }
+
+    // ---- actions -------------------------------------------------------------
+    async function scan() {
+      if (busy) { return; }
+      setBusy(true);
+      homebridge.showSpinner();
+      const status = document.getElementById('scan-status');
+      status.textContent = 'Scanning, this takes about 30 seconds...';
+      try {
+        const found = await homebridge.request('/discover');
+        // Merge, never replace — a device missed by this scan stays known from a
+        // previous one, and a configured fan missed here is never dropped.
+        lastScanIds = new Set(found.map(d => d.id));
+        for (const d of found) {
+          discovered.set(d.id, { ip: d.ip, version: d.version });
+        }
+        status.textContent = `Found ${found.length} fan(s) on the network.`;
+        homebridge.toast.success(`Scan complete: ${found.length} fan(s) found`);
+        renderAll();
+      } catch (e) {
+        status.textContent = 'Scan failed.';
+        homebridge.toast.error(e.message || 'Scan failed', 'Discovery');
+      } finally {
+        homebridge.hideSpinner();
+        setBusy(false);
+      }
+    }
+
+    async function fetchKeysFor(ids) {
+      if (busy) { return; }
+      const clientId = document.getElementById('clientId').value.trim();
+      const secret = document.getElementById('secret').value.trim();
+      const region = document.getElementById('region').value;
+      if (!clientId || !secret) {
+        homebridge.toast.warning('Enter your Tuya Access ID and Secret first', 'Cloud fetch');
+        return;
+      }
+      if (!ids.length) {
+        homebridge.toast.warning('No fans to fetch keys for', 'Cloud fetch');
+        return;
+      }
+      setBusy(true);
+      homebridge.showSpinner();
+      const status = document.getElementById('fetch-status');
+      status.textContent = 'Contacting Tuya...';
+      try {
+        const devices = await homebridge.request('/keys', { clientId, secret, region, ids });
+        const byId = new Map(devices.map(d => [d.id, d]));
+        let updated = 0;
+        for (const device of platform.devices) {
+          const fetched = byId.get(device.id);
+          if (fetched) {
+            device.key = fetched.key;
+            updated += 1;
+          }
+        }
+        await persist();
+        status.textContent = `Updated ${updated} key(s).`;
+        homebridge.toast.success(`Updated ${updated} key(s) from Tuya Cloud`);
+        renderAll();
+      } catch (e) {
+        status.textContent = '';
+        homebridge.toast.error(e.message || 'Could not fetch keys', 'Cloud fetch');
+      } finally {
+        // Never leave the secret sitting in the DOM longer than needed for this call.
+        document.getElementById('secret').value = '';
+        homebridge.hideSpinner();
+        setBusy(false);
+      }
+    }
+
+    document.getElementById('scan').addEventListener('click', scan);
+    document.getElementById('fetch-all').addEventListener('click', () => fetchKeysFor(platform.devices.map(d => d.id)));
+
+    // ---- init -------------------------------------------------------------
+    homebridge.addEventListener('ready', async () => {
+      const config = await homebridge.getPluginConfig();
+      platform = config[0] ?? platform;
+      platform.devices = platform.devices || [];
+      renderAll();
+    });
+  })();
 </script>
