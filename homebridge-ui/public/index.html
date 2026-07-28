@@ -1,23 +1,44 @@
 <style>
-  .fan-row { border: 1px solid var(--bs-border-color, #dee2e6); border-radius: 0.375rem; padding: 0.75rem; margin-bottom: 0.5rem; }
-  .fan-row .fan-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-  .fan-row .fan-name-input { max-width: 220px; }
-  .fan-row .fan-id { font-family: monospace; font-size: 0.85em; opacity: 0.75; }
-  .fan-row .fan-toggles { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
-  .fan-row .fan-key-row { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.5rem; flex-wrap: wrap; }
-  .fan-row .fan-key-row input { max-width: 220px; }
-  .fan-empty { text-align: center; padding: 2rem 1rem; opacity: 0.75; }
+  /* Rows read as one list, separated by hairlines rather than boxed as 8 nested cards. */
+  .fan-list { border: 1px solid var(--bs-border-color); border-radius: .5rem; overflow: hidden; }
+  .fan-row { padding: .875rem 1rem; border-top: 1px solid var(--bs-border-color); transition: background-color .12s ease-out; }
+  .fan-row:first-child { border-top: 0; }
+  .fan-row:hover { background: var(--bs-tertiary-bg); }
+
+  .fan-head { display: flex; align-items: center; gap: .625rem; flex-wrap: wrap; }
+  .fan-name { max-width: 15rem; font-weight: 500; }
+  /* Monospace here is for an identifier, not decoration. Truncated; full value in title. */
+  .fan-id { font-family: var(--bs-font-monospace); font-size: .75rem; color: var(--bs-secondary-color); letter-spacing: -.01em; }
   .spacer { flex: 1 1 auto; }
+
+  .fan-meta { display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap; margin-top: .625rem; }
+  .fan-key { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+  .fan-key input { max-width: 13rem; }
+
+  /* Advanced settings stay folded away; "Auto" is correct for almost every install. */
+  .fan-adv { margin-top: .625rem; }
+  .fan-adv > summary { cursor: pointer; font-size: .8125rem; color: var(--bs-secondary-color); list-style: none; width: fit-content; }
+  .fan-adv > summary::-webkit-details-marker { display: none; }
+  .fan-adv > summary::before { content: '›'; display: inline-block; margin-right: .375rem; transition: transform .12s ease-out; }
+  .fan-adv[open] > summary::before { transform: rotate(90deg); }
+  .fan-adv > summary:hover { color: var(--bs-body-color); }
+  .fan-adv-body { display: flex; align-items: center; gap: .5rem; margin-top: .5rem; }
+  .fan-adv-body input { max-width: 11rem; }
+
+  .fan-empty { text-align: center; padding: 2.5rem 1rem; color: var(--bs-secondary-color); }
+  .section-note { color: var(--bs-secondary-color); max-width: 62ch; }
+  .card + .card { margin-top: 1.25rem; }
+  .card h5 { margin-bottom: .5rem; }
 </style>
 
 <div class="card">
   <h5>Your fans</h5>
-  <div id="fan-list"></div>
+  <div id="fan-list" class="fan-list"></div>
 </div>
 
 <div class="card mt-3">
   <h5>Scan the network</h5>
-  <p class="text-muted small">
+  <p class="section-note small">
     Scans for Tuya devices on the same network as Homebridge. Takes about 30 seconds.
     A fan already in your config is never removed just because a scan misses it.
   </p>
@@ -27,7 +48,7 @@
 
 <div class="card mt-3">
   <h5>Tuya cloud credentials</h5>
-  <p class="text-muted small">
+  <p class="section-note small">
     Used to fetch local keys from your Tuya IoT project. Tuya time-limits access to
     device data through the IoT portal, so cloud fetch can stop working over time — every
     fan below also supports pasting its local key in directly, which always works.
@@ -126,6 +147,7 @@
       const input = el('input', {
         class: 'form-check-input',
         type: 'checkbox',
+        role: 'switch',
         onchange: async e => {
           device[prop] = e.target.checked;
           // On a failed save, persist() has already reloaded `platform` to what's
@@ -135,12 +157,12 @@
         },
       });
       input.checked = Boolean(device[prop]);
-      return el('div', { class: 'form-check form-check-inline' }, [input, el('label', { class: 'form-check-label' }, label)]);
+      return el('div', { class: 'form-check form-switch' }, [input, el('label', { class: 'form-check-label small' }, label)]);
     }
 
     function configuredRow(device) {
       const nameInput = el('input', {
-        class: 'form-control form-control-sm fan-name-input',
+        class: 'form-control form-control-sm fan-name',
         value: device.name,
         onchange: async e => {
           device.name = e.target.value;
@@ -150,8 +172,8 @@
       nameInput.value = device.name;
 
       const ipInput = el('input', {
-        class: 'form-control form-control-sm fan-name-input',
-        placeholder: 'Auto (leave blank)',
+        class: 'form-control form-control-sm',
+        placeholder: 'Auto',
         onchange: async e => {
           const value = e.target.value.trim();
           if (value) { device.ip = value; } else { delete device.ip; }
@@ -160,7 +182,7 @@
       });
       ipInput.value = device.ip || '';
 
-      const keyInput = el('input', { class: 'form-control form-control-sm', type: 'password', placeholder: 'Paste local key' });
+      const keyInput = el('input', { class: 'form-control form-control-sm', type: 'password', placeholder: 'Paste local key', 'aria-label': `Local key for ${device.name}` });
       const saveKeyBtn = el('button', {
         class: 'btn btn-sm btn-primary',
         onclick: async () => {
@@ -174,16 +196,16 @@
           await persist(`Key saved for ${device.name}`);
           renderAll();
         },
-      }, 'Save key');
+      }, 'Save');
 
       const fetchKeyBtn = el('button', {
-        class: 'btn btn-sm btn-primary',
+        class: 'btn btn-sm btn-link p-0',
         title: 'Fetch this fan’s local key from Tuya Cloud using the credentials below',
         onclick: () => fetchKeysFor([device.id]),
-      }, 'Fetch from Tuya Cloud');
+      }, 'Fetch from cloud');
 
       const removeBtn = el('button', {
-        class: 'btn btn-sm btn-outline-danger',
+        class: 'btn btn-sm btn-link link-secondary p-0',
         onclick: async () => {
           if (!confirm(`Remove ${device.name} from the config?`)) { return; }
           platform.devices = platform.devices.filter(d => d.id !== device.id);
@@ -192,29 +214,52 @@
         },
       }, 'Remove');
 
-      const keyStatus = el('span', { class: 'small text-muted' }, device.key ? 'Key set' : 'No key set');
+      // A fan whose key is already stored is finished — it gets a quiet confirmation and
+      // a text link, not an input and two filled buttons. Only a fan still MISSING its
+      // key shows the entry affordances, which is where attention actually belongs.
+      const keySection = device.key
+        ? el('div', { class: 'fan-key' }, [
+          el('span', { class: 'small text-success' }, '✓ Key set'),
+          el('button', {
+            class: 'btn btn-sm btn-link link-secondary p-0',
+            onclick: () => { device.key = ''; renderAll(); },
+          }, 'Replace'),
+        ])
+        : el('div', { class: 'fan-key' }, [
+          el('span', { class: 'small text-warning-emphasis' }, 'Key needed'),
+          keyInput, saveKeyBtn, fetchKeyBtn,
+        ]);
+
+      const idPill = el('span', { class: 'fan-id', title: device.id }, `…${device.id.slice(-6)}`);
 
       return el('div', { class: 'fan-row' }, [
         el('div', { class: 'fan-head' }, [
           nameInput,
-          el('span', { class: 'fan-id' }, device.id),
+          idPill,
           badgeFor(device),
           el('div', { class: 'spacer' }),
           removeBtn,
         ]),
-        el('div', { class: 'fan-key-row' }, [keyStatus, keyInput, saveKeyBtn, fetchKeyBtn]),
-        el('div', { class: 'fan-toggles' }, [
-          toggle(device, 'hasLight', 'Has light'),
-          toggle(device, 'exposeModeSwitches', 'Mode switches'),
-          toggle(device, 'exposeMatter', 'Expose to Matter'),
-          el('label', { class: 'small text-muted mb-0 ms-2' }, ['Pinned IP: ', ipInput]),
+        el('div', { class: 'fan-meta' }, [
+          keySection,
+          toggle(device, 'hasLight', 'Light'),
+          toggle(device, 'exposeModeSwitches', 'Sleep switch'),
+          toggle(device, 'exposeMatter', 'Matter'),
+        ]),
+        el('details', { class: 'fan-adv' }, [
+          el('summary', {}, 'Advanced'),
+          el('div', { class: 'fan-adv-body' }, [
+            el('label', { class: 'small text-muted mb-0' }, 'Pinned IP'),
+            ipInput,
+            el('span', { class: 'small text-muted' }, 'Leave blank to discover automatically'),
+          ]),
         ]),
       ]);
     }
 
     function discoveredOnlyRow(id, info) {
       const addBtn = el('button', {
-        class: 'btn btn-sm btn-primary',
+        class: 'btn btn-sm btn-outline-primary',
         onclick: async () => {
           platform.devices.push({
             id,
@@ -233,8 +278,8 @@
 
       return el('div', { class: 'fan-row' }, [
         el('div', { class: 'fan-head' }, [
-          el('span', { class: 'fan-id' }, id),
-          el('span', { class: 'small text-muted' }, `${info.ip} • v${info.version}`),
+          el('span', { class: 'fan-id', title: id }, `…${id.slice(-6)}`),
+          el('span', { class: 'small text-muted' }, `${info.ip} · v${info.version}`),
           el('span', { class: 'badge bg-secondary' }, 'Not configured'),
           el('div', { class: 'spacer' }),
           addBtn,
