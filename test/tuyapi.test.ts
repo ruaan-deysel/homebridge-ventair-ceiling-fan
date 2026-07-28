@@ -4,6 +4,7 @@ const connect = vi.fn();
 const find = vi.fn();
 const disconnect = vi.fn();
 const refresh = vi.fn();
+const set = vi.fn().mockResolvedValue({ dps: {} });
 const handlers: Record<string, ((...a: unknown[]) => void)[]> = {};
 
 vi.mock('tuyapi', () => ({
@@ -14,7 +15,7 @@ vi.mock('tuyapi', () => ({
     refresh = refresh;
     isConnected = () => false;
     get = vi.fn().mockResolvedValue({ dps: {} });
-    set = vi.fn().mockResolvedValue({ dps: {} });
+    set = set;
     on(event: string, fn: (...a: unknown[]) => void) {
       (handlers[event] ??= []).push(fn);
       return this;
@@ -38,6 +39,7 @@ beforeEach(() => {
   find.mockReset().mockResolvedValue(true);
   disconnect.mockReset();
   refresh.mockReset();
+  set.mockReset().mockResolvedValue({ dps: {} });
   Object.values(log).forEach(m => m.mockReset());
 });
 
@@ -102,5 +104,16 @@ describe('reconnect supervision', () => {
     // jitter is 50-100% of nextDelayMs; after the first failure nextDelayMs is 2s
     // (attempt incremented to 1), so the delay just scheduled was jitter(1s).
     expect(d.nextDelayMs).toBe(2000);
+  });
+
+  it('sends one set() call per datapoint, not a batched write', async () => {
+    // This firmware silently ignores multiple:true batched writes on real
+    // hardware — see the comment on TuyapiDevice.set(). One call per dp is
+    // the regression guard for that.
+    const d = new TuyapiDevice(opts, log);
+    await d.set({ '1': true, '3': 5 });
+    expect(set).toHaveBeenCalledTimes(2);
+    expect(set).toHaveBeenNthCalledWith(1, { dps: 1, set: true, shouldWaitForResponse: false });
+    expect(set).toHaveBeenNthCalledWith(2, { dps: 3, set: 5, shouldWaitForResponse: false });
   });
 });

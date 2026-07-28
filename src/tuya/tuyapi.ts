@@ -136,12 +136,18 @@ export class TuyapiDevice implements TuyaDevice {
     this.device.disconnect();
   }
 
-  /** One batched write rather than a sequence of single-DP calls. */
+  /**
+   * One `set()` call per datapoint, sequentially.
+   *
+   * Measured on real Ventair Skyfan DC hardware: `set({ multiple: true, data })`
+   * is accepted with no error but silently has NO EFFECT on this firmware — do
+   * not "optimise" this back into a batched write. Sequential because there is
+   * one TCP connection per device; concurrent writes on it are not worth the risk.
+   */
   async set(dps: Record<string, DpValue>): Promise<void> {
-    if (Object.keys(dps).length === 0) {
-      return;
+    for (const [dp, value] of Object.entries(dps)) {
+      await this.device.set({ dps: Number(dp), set: value, shouldWaitForResponse: false });
     }
-    await this.device.set({ multiple: true, data: dps, shouldWaitForResponse: false });
   }
 
   async get(): Promise<Record<string, DpValue>> {
