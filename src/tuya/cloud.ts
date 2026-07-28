@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import dns from 'node:dns';
 import https from 'node:https';
 
 export const TUYA_REGIONS = {
@@ -52,8 +53,41 @@ const REQUEST_TIMEOUT_MS = 10_000;
  * `ERR_INVALID_ARG_TYPE` — Node's built-in `fetch` uses its own internal undici
  * instance, which rejects a dispatcher built from a different module instance. Plain
  * `https.request` has no such internal-instance requirement.)
+ *
+ * `autoSelectFamily: false` alone just falls back to plain DNS resolution order,
+ * which is whatever the resolver happens to hand back first — on a host where
+ * AAAA sorts first with no usable IPv6 route, that reproduces the exact
+ * tuya/tuya-homebridge#412 bug this was meant to fix. `lookup` below resolves
+ * all addresses and explicitly prefers an IPv4 one when present, while still
+ * falling back to IPv6 on an IPv6-only host — so neither ordering luck nor
+ * IPv6-only breakage decides the outcome.
  */
-const AGENT = new https.Agent({ autoSelectFamily: false, keepAlive: true });
+const AGENT = new https.Agent({ autoSelectFamily: false, keepAlive: true, lookup: preferIPv4 });
+
+/**
+ * Resolves `hostname` and prefers an IPv4 address when one exists, falling back
+ * to IPv6 when it's the only family available. See the `AGENT` comment above —
+ * tuya/tuya-homebridge#412.
+ */
+function preferIPv4(
+  hostname: string,
+  options: dns.LookupOptions,
+  callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
+): void {
+  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+    if (err) {
+      callback(err, '', 0);
+      return;
+    }
+    const list = addresses as dns.LookupAddress[];
+    if (list.length === 0) {
+      callback(Object.assign(new Error(`No addresses found for ${hostname}`), { code: 'ENOTFOUND' }), '', 0);
+      return;
+    }
+    const chosen = [...list].sort((a, b) => a.family - b.family)[0];
+    callback(null, chosen.address, chosen.family);
+  });
+}
 
 interface TuyaResponseBody<T> {
   success: boolean;

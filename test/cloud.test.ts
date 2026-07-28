@@ -1,9 +1,10 @@
 import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { requestMock, agentCtorArgs } = vi.hoisted(() => ({
+const { requestMock, agentCtorArgs, dnsLookupMock } = vi.hoisted(() => ({
   requestMock: vi.fn(),
   agentCtorArgs: [] as unknown[],
+  dnsLookupMock: vi.fn(),
 }));
 
 class FakeRequest extends EventEmitter {
@@ -20,6 +21,10 @@ vi.mock('node:https', () => ({
     },
     request: requestMock,
   },
+}));
+
+vi.mock('node:dns', () => ({
+  default: { lookup: dnsLookupMock },
 }));
 
 const { TuyaCloud } = await import('../src/tuya/cloud.js');
@@ -61,6 +66,43 @@ describe('TuyaCloud transport', () => {
     const opts = agentCtorArgs[0] as Record<string, unknown>;
     expect(opts.autoSelectFamily).toBe(false);
     expect(opts).not.toHaveProperty('family');
+  });
+
+  describe('custom DNS lookup (tuya/tuya-homebridge#412)', () => {
+    // Exercise the real `lookup` function installed on the Agent — not a
+    // reimplementation of it — by pulling it off the captured ctor args and
+    // driving it against a mocked node:dns.
+    function lookupFn() {
+      const opts = agentCtorArgs[0] as { lookup: (
+        hostname: string,
+        options: unknown,
+        cb: (err: Error | null, address: string, family: number) => void,
+      ) => void };
+      return opts.lookup;
+    }
+
+    it('prefers the IPv4 address when the resolver returns AAAA first but IPv6 is unusable', async () => {
+      dnsLookupMock.mockImplementation((_host, _opts, cb) => {
+        cb(null, [
+          { address: '2001:db8::1', family: 6 },
+          { address: '192.0.2.1', family: 4 },
+        ]);
+      });
+      const result = await new Promise<{ address: string; family: number }>(resolve => {
+        lookupFn()('example.test', {}, (_err, address, family) => resolve({ address, family }));
+      });
+      expect(result).toEqual({ address: '192.0.2.1', family: 4 });
+    });
+
+    it('falls back to the IPv6 address on an IPv6-only host', async () => {
+      dnsLookupMock.mockImplementation((_host, _opts, cb) => {
+        cb(null, [{ address: '2001:db8::1', family: 6 }]);
+      });
+      const result = await new Promise<{ address: string; family: number }>(resolve => {
+        lookupFn()('example.test', {}, (_err, address, family) => resolve({ address, family }));
+      });
+      expect(result).toEqual({ address: '2001:db8::1', family: 6 });
+    });
   });
 });
 

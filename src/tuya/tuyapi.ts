@@ -151,8 +151,23 @@ export class TuyapiDevice implements TuyaDevice {
    * is accepted with no error but silently has NO EFFECT on this firmware — do
    * not "optimise" this back into a batched write. Sequential because there is
    * one TCP connection per device; concurrent writes on it are not worth the risk.
+   *
+   * `shouldWaitForResponse: false` (deliberate, see below) means tuyapi's own
+   * `set()` promise ALWAYS resolves, even when the underlying `_send()` fails —
+   * tuyapi only rejects on a failed send when it's the one waiting for a reply.
+   * Without a guard here that swallows every offline write instead of surfacing
+   * it, silently leaving HomeKit/Matter showing a state the device never
+   * reached. Guarding on `connected` catches the dominant real failure (device
+   * unreachable) cheaply, without touching tuyapi's send path or serialisation.
+   *
+   * Not switching to `shouldWaitForResponse: true`: it changes latency across
+   * eight devices and tuyapi throws "A set command is already in progress" if a
+   * second waiting set overlaps — a bigger, riskier change than this bug needs.
    */
   async set(dps: Record<string, DpValue>): Promise<void> {
+    if (!this.connectedState) {
+      throw new Error(`[${this.opts.id}] cannot write: device is disconnected`);
+    }
     for (const [dp, value] of Object.entries(dps)) {
       await this.device.set({ dps: Number(dp), set: value, shouldWaitForResponse: false });
     }

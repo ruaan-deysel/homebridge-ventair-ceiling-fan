@@ -143,9 +143,24 @@ describe('reconnect supervision', () => {
     // hardware — see the comment on TuyapiDevice.set(). One call per dp is
     // the regression guard for that.
     const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
     await d.set({ '1': true, '3': 5 });
     expect(set).toHaveBeenCalledTimes(2);
     expect(set).toHaveBeenNthCalledWith(1, { dps: 1, set: true, shouldWaitForResponse: false });
     expect(set).toHaveBeenNthCalledWith(2, { dps: 3, set: 5, shouldWaitForResponse: false });
+  });
+
+  it('rejects a write attempted while disconnected instead of silently swallowing it', async () => {
+    // tuyapi's set() always resolves with shouldWaitForResponse: false (it only
+    // rejects on send failure when it's waiting for a reply) — so without this
+    // guard a write issued while offline would resolve as if it succeeded,
+    // leaving HomeKit/Matter believing a command reached hardware that never
+    // saw it. See the comment on TuyapiDevice.set().
+    const d = new TuyapiDevice(opts, log);
+    expect(d.connected).toBe(false);
+    await expect(d.set({ '1': true })).rejects.toThrow(/disconnected/i);
+    expect(set).not.toHaveBeenCalled();
   });
 });
