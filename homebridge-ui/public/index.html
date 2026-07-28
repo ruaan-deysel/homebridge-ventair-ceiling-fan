@@ -74,12 +74,15 @@
     }
 
     async function persist(message) {
-      const config = await homebridge.getPluginConfig();
-      const rest = config.slice(1);
-      await homebridge.updatePluginConfig([platform, ...rest]);
-      await homebridge.savePluginConfig();
-      if (message) {
-        homebridge.toast.success(message);
+      setBusy(true);
+      try {
+        const config = await homebridge.getPluginConfig();
+        const rest = config.slice(1);
+        await homebridge.updatePluginConfig([platform, ...rest]);
+        await homebridge.savePluginConfig();
+        homebridge.toast.success(message || 'Saved');
+      } finally {
+        setBusy(false);
       }
     }
 

@@ -18,10 +18,22 @@
     "homebridge": "^1.8.0 || ^2.0.0",
     "node": "^22.10.0 || ^24.0.0"
   },
-  "files": ["dist", "homebridge-ui", "config.schema.json", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "homebridge-ui",
+    "config.schema.json",
+    "README.md",
+    "LICENSE"
+  ],
   "keywords": [
-    "homebridge-plugin", "supports-hap", "skyfandc",
-    "ceiling", "fan", "ceiling fan", "tuya", "ventair"
+    "homebridge-plugin",
+    "supports-hap",
+    "skyfandc",
+    "ceiling",
+    "fan",
+    "ceiling fan",
+    "tuya",
+    "ventair"
   ],
   "scripts": {
     "lint": "eslint . --max-warnings=0",
@@ -33,7 +45,6 @@
   "dependencies": {
     "@homebridge/plugin-ui-utils": "^2.2.5",
     "tuyapi": "^7.7.1",
-    "undici": "^7.29.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

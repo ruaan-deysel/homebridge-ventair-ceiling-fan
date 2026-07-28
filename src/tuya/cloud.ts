@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { Agent, fetch } from 'undici';
+import https from 'node:https';
 
 export const TUYA_REGIONS = {
   eu: 'openapi.tuyaeu.com',
@@ -29,22 +29,38 @@ const DEVICE_ID_RE = /^[0-9a-f]{16,26}$/i;
 const REQUEST_TIMEOUT_MS = 10_000;
 
 /**
- * Node's Happy Eyeballs connection racing (`net.setDefaultAutoSelectFamily`, on by
- * default since Node 20) tries the IPv6 (AAAA) address alongside the IPv4 one. On a
- * host with no IPv6 route the IPv6 attempt fails instantly with ENETUNREACH, which
- * poisons the shared attempt loop so the IPv4 attempt that would have succeeded times
- * out too. Confirmed against Tuya's own openapi hosts and reported upstream against
- * Tuya's own Homebridge plugin: https://github.com/tuya/tuya-homebridge/issues/412
- * Measured on the target bridge: default behaviour ETIMEDOUT ~800ms; IPv4-only
- * dispatcher succeeds in ~800ms.
+ * Node's Happy Eyeballs connection racing (`autoSelectFamily`, on by default since
+ * Node 20) tries the IPv6 (AAAA) address alongside the IPv4 one. On a host with no
+ * IPv6 route the IPv6 attempt fails instantly with ENETUNREACH, which poisons the
+ * shared attempt loop so the IPv4 attempt that would have succeeded times out too.
+ * Reported upstream against Tuya's own Homebridge plugin, same API hosts:
+ * https://github.com/tuya/tuya-homebridge/issues/412
+ * Measured on the target bridge: default agent ETIMEDOUT ~810ms; `autoSelectFamily:
+ * false` alone succeeds in ~820ms.
  *
- * This is scoped to TuyaCloud's own fetch calls via an explicit undici Agent, not
- * `net.setDefaultAutoSelectFamily(false)` / `dns.setDefaultResultOrder('ipv4first')` —
- * Homebridge runs many plugins in one process, and flipping global socket/DNS
- * behaviour for all of them because one cloud API has a broken IPv6 route is not this
- * plugin's call to make.
+ * Deliberately `autoSelectFamily: false` only — NOT `family: 4`. Forcing IPv4 would
+ * break a genuinely IPv6-only host reaching Tuya's dual-stack API; disabling the race
+ * just lets normal DNS resolution order decide, which is enough to stop the poisoning.
+ *
+ * This must stay a per-agent setting on this module-scoped `https.Agent`, never
+ * `net.setDefaultAutoSelectFamily(false)` process-wide — Homebridge runs many plugins
+ * in one process, and flipping global socket behaviour for all of them because one
+ * cloud API has a broken IPv6 attempt is not this plugin's call to make.
+ *
+ * (An earlier version of this fix used a separately-installed `undici` package's
+ * `Agent` as `dispatcher` for Node's global `fetch`. That fails with
+ * `ERR_INVALID_ARG_TYPE` — Node's built-in `fetch` uses its own internal undici
+ * instance, which rejects a dispatcher built from a different module instance. Plain
+ * `https.request` has no such internal-instance requirement.)
  */
-const IPV4_ONLY_DISPATCHER = new Agent({ connect: { family: 4, autoSelectFamily: false } });
+const AGENT = new https.Agent({ autoSelectFamily: false, keepAlive: true });
+
+interface TuyaResponseBody<T> {
+  success: boolean;
+  msg?: string;
+  code?: number;
+  result: T;
+}
 
 /**
  * Tuya signs requests as HMAC-SHA256 over clientId + [token] + timestamp + nonce + stringToSign.
@@ -78,34 +94,31 @@ export class TuyaCloud {
       ? this.clientId + this.token + t + nonce + stringToSign
       : this.clientId + t + nonce + stringToSign;
 
-    let res: Awaited<ReturnType<typeof fetch>>;
+    let statusCode: number | undefined;
+    let raw: string;
     try {
-      res = await fetch(`https://${this.host}${path}`, {
-        headers: {
-          client_id: this.clientId,
-          sign: this.sign(payload),
-          t,
-          nonce,
-          sign_method: 'HMAC-SHA256',
-          ...(this.token ? { access_token: this.token } : {}),
-        },
-        dispatcher: IPV4_ONLY_DISPATCHER,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
+      ({ statusCode, body: raw } = await this.request(path, {
+        client_id: this.clientId,
+        sign: this.sign(payload),
+        t,
+        nonce,
+        sign_method: 'HMAC-SHA256',
+        ...(this.token ? { access_token: this.token } : {}),
+      }));
     } catch (error) {
       // Never let a raw error (which may embed request internals) bubble up — surface
       // only whether it was a timeout or some other network failure.
-      if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+      if (error instanceof Error && error.name === 'TimeoutError') {
         throw new Error('Tuya API request timed out', { cause: error });
       }
       throw new Error('Could not reach the Tuya API — check your network connection', { cause: error });
     }
 
-    let body: { success: boolean; msg?: string; code?: number; result: T };
+    let body: TuyaResponseBody<T>;
     try {
-      body = await res.json() as { success: boolean; msg?: string; code?: number; result: T };
+      body = JSON.parse(raw) as TuyaResponseBody<T>;
     } catch {
-      throw new Error(`Tuya API returned an unreadable response (HTTP ${res.status})`);
+      throw new Error(`Tuya API returned an unreadable response (HTTP ${statusCode})`);
     }
 
     if (!body.success) {
@@ -113,9 +126,28 @@ export class TuyaCloud {
       if (body.code === 1004 || body.code === 1010) {
         throw new Error('Tuya rejected the Access ID / Secret — check your credentials');
       }
-      throw new Error(body.msg ? `Tuya API error: ${body.msg}` : `Tuya API request failed (HTTP ${res.status})`);
+      throw new Error(body.msg ? `Tuya API error: ${body.msg}` : `Tuya API request failed (HTTP ${statusCode})`);
     }
     return body.result;
+  }
+
+  private request(path: string, headers: Record<string, string>): Promise<{ statusCode?: number; body: string }> {
+    return new Promise((resolve, reject) => {
+      const req = https.request(
+        { hostname: this.host, path, method: 'GET', headers, agent: AGENT, timeout: REQUEST_TIMEOUT_MS },
+        res => {
+          const chunks: Buffer[] = [];
+          res.on('data', chunk => chunks.push(chunk as Buffer));
+          res.on('end', () => resolve({ statusCode: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+          res.on('error', reject);
+        },
+      );
+      req.on('timeout', () => {
+        req.destroy(Object.assign(new Error('Tuya API request timed out'), { name: 'TimeoutError' }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
   }
 
   async authenticate(): Promise<void> {
