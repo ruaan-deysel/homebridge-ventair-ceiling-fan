@@ -283,10 +283,10 @@ prevent.
 
 ## Risks
 
-- **One TCP connection per Tuya device.** tuyapi holds a single socket per device. If Home
-  Assistant, another Homebridge plugin, or another integration already talks to these fans
-  locally, the two will contend for the socket. Confirm what currently controls them before
-  pointing 8 connections at them.
+- **One TCP connection per Tuya device.** ~~Contention risk~~ — **resolved 2026-07-28: the
+  user confirms nothing currently controls these fans locally.** The constraint still holds
+  architecturally (one socket per device, so the plugin must not open a second connection to
+  the same fan), but there is no competing integration to contend with.
 - **Breaking change for existing users.** Removing `SwingMode` breaks any automation built on
   it. Must be called out explicitly in the 2.0.0 release notes.
 - **Numeric DP indices unconfirmed.** The cloud spec gives DP *codes*, not the numeric indices
