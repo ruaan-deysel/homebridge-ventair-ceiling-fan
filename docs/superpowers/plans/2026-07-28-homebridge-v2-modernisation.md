@@ -455,8 +455,20 @@ describe('toFanState', () => {
     expect(toFanState({ [DP.power]: false }, { brightnessScale: 100 })).toEqual({ power: false });
   });
 
-  it('rejects an unknown mode instead of passing it through', () => {
-    expect(toFanState({ [DP.mode]: 'turbo' }, { brightnessScale: 100 }).mode).toBeUndefined();
+  it('normalises mode case, since the device reports "Normal" but accepts "normal"', () => {
+    expect(toFanState({ [DP.mode]: 'Normal' }, { brightnessScale: 100 }).mode).toBe('normal');
+    expect(toFanState({ [DP.mode]: 'Sleep' }, { brightnessScale: 100 }).mode).toBe('sleep');
+  });
+
+  it('preserves an unrecognised mode rather than discarding it', () => {
+    // The cloud enum was incomplete once already — dropping unknowns would have
+    // silently discarded "Normal", the live value on all eight fans.
+    expect(toFanState({ [DP.mode]: 'turbo' }, { brightnessScale: 100 }).mode).toBe('turbo');
+  });
+
+  it('treats an absent speed datapoint as unknown, not zero', () => {
+    // Two of the eight fans omit DP 3 entirely.
+    expect(toFanState({ [DP.power]: false }, { brightnessScale: 100 }).speedStep).toBeUndefined();
   });
 
   it('scales brightness from the device range to percent', () => {
@@ -504,8 +516,24 @@ export const DP = {
   lightBrightness: '16',
 } as const;
 
-export const MODES = ['nature', 'sleep', 'smart'] as const;
-export type FanMode = (typeof MODES)[number];
+/**
+ * Modes confirmed over the LAN. The device reports capitalised values ("Normal"), and the
+ * cloud specification omits "Normal" entirely — so this list is treated as *known* modes,
+ * not as an exhaustive enum. Unrecognised values are preserved, never discarded.
+ *
+ * "normal" is the default state; all mode switches off means Normal.
+ */
+export const KNOWN_MODES = ['normal', 'nature', 'sleep', 'smart'] as const;
+
+/** Modes offered as HomeKit switches. Normal is the implicit all-switches-off state. */
+export const SWITCHABLE_MODES = ['nature', 'sleep', 'smart'] as const;
+
+export type FanMode = string;
+
+/** The device expects capitalised mode strings, e.g. "Normal". */
+export function toDeviceMode(mode: string): string {
+  return mode.charAt(0).toUpperCase() + mode.slice(1).toLowerCase();
+}
 
 export const DIRECTIONS = ['forward', 'reverse'] as const;
 export type FanDirection = (typeof DIRECTIONS)[number];
@@ -552,8 +580,9 @@ export function toFanState(dps: Record<string, DpValue>, opts: DpsOptions): Part
   if (typeof dps[DP.power] === 'boolean') {
     state.power = dps[DP.power];
   }
-  if (isMode(dps[DP.mode])) {
-    state.mode = dps[DP.mode];
+  if (typeof dps[DP.mode] === 'string') {
+    // Lower-cased for internal comparison; unknown values pass through untouched.
+    state.mode = dps[DP.mode].toLowerCase();
   }
   if (typeof dps[DP.speed] === 'number') {
     state.speedStep = clamp(dps[DP.speed], 0, MAX_SPEED_STEP);
@@ -579,7 +608,7 @@ export function toDps(patch: Partial<FanState>, opts: DpsOptions): Record<string
     dps[DP.power] = patch.power;
   }
   if (patch.mode !== undefined) {
-    dps[DP.mode] = patch.mode;
+    dps[DP.mode] = toDeviceMode(patch.mode);
   }
   if (patch.speedStep !== undefined) {
     dps[DP.speed] = clamp(patch.speedStep, 1, MAX_SPEED_STEP);
@@ -595,10 +624,6 @@ export function toDps(patch: Partial<FanState>, opts: DpsOptions): Record<string
   }
 
   return dps;
-}
-
-function isMode(v: DpValue | undefined): v is FanMode {
-  return typeof v === 'string' && (MODES as readonly string[]).includes(v);
 }
 
 function isDirection(v: DpValue | undefined): v is FanDirection {
@@ -2024,15 +2049,12 @@ export class CeilingFanAccessory {
   }
 
   /**
-   * The device is always in exactly one of three modes, so there is no "off".
-   * Turning off the active switch would leave the device in an undefined state — ignore it.
+   * Nature/Sleep/Smart are switches; "all off" means Normal, which the LAN probe
+   * confirmed is a real writable mode. So turning the active switch off is a genuine
+   * action — return the fan to Normal — not a no-op.
    */
   private async setMode(mode: FanMode, on: boolean): Promise<void> {
-    if (!on) {
-      this.modeSwitches.get(mode)?.updateCharacteristic(this.platform.Characteristic.On, this.state.mode === mode);
-      return;
-    }
-    await this.write({ mode });
+    await this.write({ mode: on ? mode : 'normal' });
     this.syncModeSwitches();
   }
 

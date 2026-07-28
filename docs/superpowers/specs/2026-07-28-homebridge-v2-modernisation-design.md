@@ -111,20 +111,38 @@ testable. This eliminates the three-places-must-agree hazard.
 DPS table (protocol 3.3, product key `vzj97d3m05yjhchn`, category `fs`). Verified against the
 Tuya cloud device specification for all 8 units — every unit reports an identical spec:
 
-| Code | Type | Values | Current numeric DP assumption |
-|------|------|--------|-------------------------------|
-| `switch` | Boolean | — | 1 |
-| `mode` | Enum | `nature`, `sleep`, `smart` | 2 |
-| `fan_speed_percent` | Integer | min 1, max 5, step 1 | 3 |
-| `fan_direction` | Enum | `forward`, `reverse` | 8 |
-| `countdown_set` | Enum | `cancel`, `1h`…`12h` | not implemented |
+**Measured over the LAN on 2026-07-28** (`get({ schema: true })` against all 8 units), which
+supersedes the cloud specification where they disagree:
 
-**Confirmed:** the `nature`/`sleep`/`smart` enum matches the existing code, and speed really is
-1–5, so the ×20/÷20 conversion is correct.
+| DP | Meaning | Observed values | vs. old assumption |
+|----|---------|-----------------|--------------------|
+| 1 | power | `false` on all 8 | ✅ correct |
+| 2 | mode | **`Normal`** on all 8 | ❌ see below |
+| 3 | speed | `1` or `2`; **absent on 2 units** | ⚠️ see below |
+| 8 | direction | `forward` / `reverse` | ✅ correct |
+| 22 | countdown | `cancel` | ❌ was assumed to be DP 2 |
 
-**Still unverified:** the cloud API returns DP *codes*, not the numeric DP indices used by the
-local protocol. The numeric column above is the existing code's assumption and must be
-confirmed by dumping `get({ schema: true })` from a fan over the LAN during task #10.
+**The cloud specification is wrong about mode.** Cloud declares the enum as
+`nature | sleep | smart`. The devices actually report `Normal` — a fourth value cloud does not
+list — and a write probe established that only **two** values are reachable over the local
+protocol while the fan is off:
+
+| Written | Device reports |
+|---------|----------------|
+| `Normal` | `Normal` |
+| `Nature`, `Smart`, `Sleep`, `nature`, `smart` | `Sleep` |
+
+Any non-`Normal` string coerces to `Sleep`. Working hypothesis: `Nature`/`Smart` require the
+motor to be running. **Unresolved — to be retested with the fan powered on during task #10.**
+
+**DP 3 can be absent.** Lounge Room and Guest Room returned no speed datapoint at all. Code
+must treat a missing DP as "unknown", never as zero. This is why `toFanState` returns a partial
+state rather than filling defaults.
+
+**No light DPs exist on any unit** — DP 15/16 are absent, confirming the hardware has no light.
+
+**`refresh({})` hangs.** It timed out after 20s against a healthy, connected device. The
+existing code calls `device.refresh({})` after every light write. The rewrite must not use it.
 
 **Not present on this hardware:** there are no light DPs. None of the 8 units has a light, so
 DPS 15/16 do not exist here.
@@ -177,8 +195,13 @@ Imported by both `platform.ts` (runtime IP/version resolution) and `homebridge-u
   would reproduce the exact lossiness that makes the `SwingMode` hack wrong.
 - **Mode is exposed as three mutually-exclusive `Switch` services** (Nature / Sleep / Smart)
   behind the config flag `exposeModeSwitches`, default `false`. Selecting one clears the other
-  two; turning off the active switch is a no-op, since the device is always in some mode. Off
-  by default keeps the accessory a single clean fan tile.
+  two; **turning the active switch off returns the fan to `Normal`**, which the LAN probe
+  confirmed is a real, writable mode. All three switches off therefore means Normal — the
+  mapping is lossless and "off" carries meaning rather than being a no-op.
+- **Mode parsing is permissive, not strict.** The cloud enum turned out to be incomplete, so
+  `dps.ts` matches known modes case-insensitively and **preserves unrecognised values** rather
+  than discarding them. Rejecting unknown modes would have silently dropped `Normal` — the
+  actual live value on all eight fans.
 - **`countdown_set` is out of scope.** The hardware exposes a 1–12h timer that the plugin does
   not implement. This project is a modernisation, not a feature expansion; the timer can be
   proposed later on its own merits.
