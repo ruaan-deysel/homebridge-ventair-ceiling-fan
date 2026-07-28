@@ -1,7 +1,7 @@
-import {API, Categories, Characteristic, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service} from 'homebridge';
+import type {API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service} from 'homebridge';
 
-import {PLATFORM_NAME, PLUGIN_NAME} from './settings';
-import {CeilingFanAccessory} from './platformAccessory';
+import {PLATFORM_NAME, PLUGIN_NAME} from './settings.js';
+import {CeilingFanAccessory} from './platformAccessory.js';
 
 interface DeviceConfig {
   id: string;
@@ -22,7 +22,7 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
   private devices: DeviceConfig[] = [];
 
   constructor(
-    public readonly log: Logger,
+    public readonly log: Logging,
     public readonly config: PlatformConfig,
     public readonly api: API,
   ) {
@@ -58,7 +58,7 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
         new CeilingFanAccessory(this, existingAccessory);
       } else if(!existingAccessory) {
         this.log.info('Adding new ceiling fan:', device.id, device.name, device.hasLight);
-        const accessory = new this.api.platformAccessory(device.name, uuid, Categories.FAN);
+        const accessory = new this.api.platformAccessory(device.name, uuid, this.api.hap.Categories.FAN);
         accessory.context.device = device;
         new CeilingFanAccessory(this, accessory);
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);

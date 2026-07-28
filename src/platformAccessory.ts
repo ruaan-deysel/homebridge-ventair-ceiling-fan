@@ -1,5 +1,5 @@
 import { CharacteristicValue, PlatformAccessory, Service } from 'homebridge';
-import { HomebridgeVentairCeilingFan } from './platform';
+import { HomebridgeVentairCeilingFan } from './platform.js';
 import TuyAPI from 'tuyapi';
 
 type TuyaDeviceData = {

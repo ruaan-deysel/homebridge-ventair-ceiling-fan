@@ -8,3 +8,5 @@ npm-debug.log*
 scripts/
 graphify-out/
 .superpowers/
+dist/
+coverage/
