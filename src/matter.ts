@@ -8,12 +8,40 @@ import { DEFAULT_BRIGHTNESS_SCALE, type DpValue, type FanState, MAX_SPEED_STEP, 
 import type { TuyaDevice } from './tuya/device.js';
 
 /**
- * Matter's `FanControl.FanMode` enum value for "off" (see @matter/types). Kept as a bare
- * number rather than importing the matter.js enum: `@matter/types` is a transitive
- * dependency of `homebridge`, not something this plugin depends on directly, and the enum
- * carries no semantics beyond "off" that this plugin needs.
+ * Fallback Matter `FanControl.FanMode`/`FanModeSequence` enum values (see @matter/types),
+ * used only when `matterApi.types` isn't available — e.g. in unit tests, where the mocked
+ * `matterApi` provides just `deviceTypes`/`clusterNames`. On a real bridge, `matterApi.types`
+ * is preferred (see `fanModeEnum`/`fanModeSequenceEnum` below) so this plugin tracks whatever
+ * matter.js version Homebridge is running, rather than hardcoding numbers that could drift.
+ *
+ * `OffLowMedHigh` is the only sequence used: these fans have 5 discrete speeds and no
+ * auto/smart mode (confirmed on hardware — only Normal/Sleep exist), so any `...Auto`
+ * sequence would misrepresent the device.
  */
-const MATTER_FAN_MODE_OFF = 0;
+const FALLBACK_FAN_MODE = { Off: 0, Low: 1, Medium: 2, High: 3 } as const;
+const FALLBACK_FAN_MODE_SEQUENCE_OFF_LOW_MED_HIGH = 0;
+
+/** Matter requires `fanModeSequence` (conformance "M") — resolve it off `matterApi.types`
+ * when exposed, else fall back to the spec value for `OffLowMedHigh`. */
+function fanModeSequence(matterApi: MatterAPI): number {
+  return matterApi.types?.FanControl?.FanModeSequence?.OffLowMedHigh ?? FALLBACK_FAN_MODE_SEQUENCE_OFF_LOW_MED_HIGH;
+}
+
+/** Matter requires `fanMode` (conformance "M"). These fans have no auto mode, so it is
+ * derived from the effective speed step: 0 → Off, 1-2 → Low, 3 → Medium, 4-5 → High. */
+function fanModeForStep(matterApi: MatterAPI, step: number): number {
+  const mode = matterApi.types?.FanControl?.FanMode ?? FALLBACK_FAN_MODE;
+  if (step <= 0) {
+    return mode.Off;
+  }
+  if (step <= 2) {
+    return mode.Low;
+  }
+  if (step === 3) {
+    return mode.Medium;
+  }
+  return mode.High;
+}
 
 export interface MatterFanCallbacks {
   setPower(on: boolean): void;
@@ -42,12 +70,14 @@ export function matterUuid(deviceId: string): string {
  * Matter's FanControl cluster has no rotation-direction attribute, so `direction` is not
  * represented here; it stays HAP-only (see README).
  */
-function matterClusters(state: FanState): { onOff: { onOff: boolean }; fanControl: Record<string, number> } {
+function matterClusters(matterApi: MatterAPI, state: FanState): { onOff: { onOff: boolean }; fanControl: Record<string, number> } {
   const speedCurrent = state.power ? state.speedStep : 0;
   const percentCurrent = state.power ? stepToPercent(state.speedStep) : 0;
   return {
     onOff: { onOff: state.power },
     fanControl: {
+      fanMode: fanModeForStep(matterApi, speedCurrent),
+      fanModeSequence: fanModeSequence(matterApi),
       speedMax: MAX_SPEED_STEP,
       speedCurrent,
       speedSetting: speedCurrent,
@@ -79,7 +109,7 @@ export function buildMatterAccessory(
     model: 'Skyfan DC',
     serialNumber: device.id,
     context: {},
-    clusters: matterClusters(state),
+    clusters: matterClusters(matterApi, state),
     handlers: {
       onOff: {
         on: () => callbacks.setPower(true),
@@ -91,7 +121,7 @@ export function buildMatterAccessory(
             callbacks.setPercent(percentSetting);
           }
         },
-        fanModeChange: ({ fanMode }) => callbacks.setPower(fanMode !== MATTER_FAN_MODE_OFF),
+        fanModeChange: ({ fanMode }) => callbacks.setPower(fanMode !== FALLBACK_FAN_MODE.Off),
       },
     },
   };
@@ -165,7 +195,7 @@ export class MatterFanBridge {
   }
 
   private async pushState(): Promise<void> {
-    const { onOff, fanControl } = matterClusters(this.state);
+    const { onOff, fanControl } = matterClusters(this.matterApi, this.state);
     try {
       await this.matterApi.updateAccessoryState(this.uuid, this.matterApi.clusterNames.OnOff, onOff);
       await this.matterApi.updateAccessoryState(this.uuid, this.matterApi.clusterNames.FanControl, fanControl);

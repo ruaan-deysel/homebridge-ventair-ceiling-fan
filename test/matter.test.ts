@@ -8,6 +8,16 @@ const matterApi = {
 
 const device = { id: 'a'.repeat(20), key: 'x'.repeat(16), name: 'Test Fan' };
 
+/**
+ * Matter's conformance validator rejects a FanControl endpoint missing any of these —
+ * fanModeSequence was missed in the first pass and failed registration on a live bridge
+ * with "Conformance M: Matter requires you to set this attribute". This list is the
+ * regression guard: every entry is unconditionally mandatory per the FanControl base
+ * attributes (Matter spec §4.4.6), independent of any optional feature (MultiSpeed,
+ * Rocking, Wind, ...).
+ */
+const MANDATORY_FAN_CONTROL_ATTRIBUTES = ['fanMode', 'fanModeSequence', 'percentSetting', 'percentCurrent'] as const;
+
 describe('buildMatterAccessory', () => {
   it('declares a Fan device with onOff and fanControl clusters', () => {
     const acc = buildMatterAccessory(matterApi as never, 'uuid-1', device as never, {
@@ -19,6 +29,7 @@ describe('buildMatterAccessory', () => {
     expect(acc.clusters!.fanControl!.speedMax).toBe(5);
     expect(acc.clusters!.fanControl!.speedCurrent).toBe(3);
     expect(acc.clusters!.fanControl!.percentCurrent).toBe(60);
+    expect(acc.clusters!.fanControl!.fanMode).toBe(2); // Medium (step 3)
   });
 
   it('reports 0% and off when the fan is stopped', () => {
@@ -28,6 +39,53 @@ describe('buildMatterAccessory', () => {
     });
     expect(acc.clusters!.onOff!.onOff).toBe(false);
     expect(acc.clusters!.fanControl!.percentCurrent).toBe(0);
+    expect(acc.clusters!.fanControl!.fanMode).toBe(0); // Off
+  });
+
+  it.each([
+    [0, 0], // Off
+    [1, 1], // Low
+    [2, 1], // Low
+    [3, 2], // Medium
+    [4, 3], // High
+    [5, 3], // High
+  ])('maps speed step %i to Matter fanMode %i', (speedStep, fanMode) => {
+    const acc = buildMatterAccessory(matterApi as never, 'uuid-1', device as never, {
+      power: speedStep > 0, speedStep, mode: 'normal', direction: 'forward',
+      lightPower: false, lightBrightness: 100,
+    });
+    expect(acc.clusters!.fanControl!.fanMode).toBe(fanMode);
+  });
+
+  it('sets fanModeSequence to OffLowMedHigh — no auto mode exists on this hardware', () => {
+    const acc = buildMatterAccessory(matterApi as never, 'uuid-1', device as never, {
+      power: true, speedStep: 1, mode: 'normal', direction: 'forward',
+      lightPower: false, lightBrightness: 100,
+    });
+    expect(acc.clusters!.fanControl!.fanModeSequence).toBe(0); // OffLowMedHigh
+  });
+
+  it('sets every attribute Matter marks mandatory on the FanControl cluster', () => {
+    const acc = buildMatterAccessory(matterApi as never, 'uuid-1', device as never, {
+      power: true, speedStep: 2, mode: 'normal', direction: 'forward',
+      lightPower: false, lightBrightness: 100,
+    });
+    for (const attr of MANDATORY_FAN_CONTROL_ATTRIBUTES) {
+      expect(acc.clusters!.fanControl, `missing mandatory FanControl attribute "${attr}"`).toHaveProperty(attr);
+    }
+  });
+
+  it('prefers the enum values exposed on matterApi.types over the hardcoded fallback', () => {
+    const apiWithTypes = {
+      ...matterApi,
+      types: { FanControl: { FanMode: { Off: 10, Low: 11, Medium: 12, High: 13 }, FanModeSequence: { OffLowMedHigh: 99 } } },
+    };
+    const acc = buildMatterAccessory(apiWithTypes as never, 'uuid-1', device as never, {
+      power: true, speedStep: 1, mode: 'normal', direction: 'forward',
+      lightPower: false, lightBrightness: 100,
+    });
+    expect(acc.clusters!.fanControl!.fanMode).toBe(11);
+    expect(acc.clusters!.fanControl!.fanModeSequence).toBe(99);
   });
 
   it('uses a UUID distinct from the HAP accessory UUID', () => {
