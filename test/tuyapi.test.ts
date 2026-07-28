@@ -283,6 +283,47 @@ describe('reconnect supervision', () => {
     expect(lastWrittenValue['3']).toBe(5);
   });
 
+  it('merges a queued write with an unrelated incoming write instead of discarding it wholesale', async () => {
+    // Reproduces: change fan speed then immediately flip direction before the speed
+    // write drains. Both must reach the transport — direction must not erase speed.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    const first = d.set({ '1': true }); // starts immediately — becomes "in flight"
+    const second = d.set({ '1': true, '3': 5 }); // queued: power + speed
+    const third = d.set({ '8': 'reverse' }); // arrives before the queued patch drains
+
+    await expect(first).resolves.toBeUndefined();
+    await expect(second).resolves.toBeUndefined();
+    await expect(third).resolves.toBeUndefined();
+
+    // All three datapoints must have reached the transport — none silently dropped.
+    expect(lastWrittenValue['1']).toBe(true);
+    expect(lastWrittenValue['3']).toBe(5);
+    expect(lastWrittenValue['8']).toBe('reverse');
+  });
+
+  it('applies per-key last-write-wins on a queued write, keeping only the newest value for a duplicated key', async () => {
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    const first = d.set({ '1': true }); // in flight, unrelated to dp 3
+    const second = d.set({ '3': 5 }); // queued
+    const third = d.set({ '3': 2 }); // supersedes dp 3 in the queued patch
+
+    await expect(first).resolves.toBeUndefined();
+    await expect(second).resolves.toBeUndefined();
+    await expect(third).resolves.toBeUndefined();
+
+    const dp3Values = set.mock.calls.filter(([call]) => (call as { dps: number }).dps === 3)
+      .map(([call]) => (call as { set: unknown }).set);
+    expect(dp3Values).toEqual([2]); // only the final value for dp 3 was ever sent
+  });
+
   it('ignores stale echoes for a datapoint while our own write is in flight or settling, and applies the last COMMAND, not the last echo', async () => {
     // Reproduces the live bug: dragging RotationSpeed 20->40->60->80->100 makes the
     // fan echo back speedStep values as it works through queued commands, and an

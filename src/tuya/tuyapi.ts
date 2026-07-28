@@ -239,17 +239,21 @@ export class TuyapiDevice implements TuyaDevice {
    * user's final chosen value even though nothing actually diverged.
    *
    * Fix: only one write is ever in flight, and at most one more is queued behind it. A
-   * new call arriving while a write is queued replaces it outright (no merge) and
-   * resolves the call it replaced immediately, quietly, with no error — that caller's
-   * optimistic UI state is about to be overwritten by this newer patch anyway. The
-   * write that actually lands still gets the full readback verification below; this
-   * only decides which patches get sent, never whether a sent one is trusted.
+   * new call arriving while a write is queued is MERGED into the queued patch — keys
+   * not present in the new call are preserved from the queued one, and keys present in
+   * both are overwritten by the new call's value (last-write-wins per datapoint, not
+   * across the whole patch). The call it merged into is resolved immediately, quietly,
+   * with no error — that caller's optimistic UI state for the keys it touched is about
+   * to be overwritten by this newer patch anyway. The write that actually lands still
+   * gets the full readback verification below; this only decides which patches get
+   * sent, never whether a sent one is trusted.
    */
   async set(dps: Record<string, DpValue>): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       if (this.writing) {
         this.pendingWrite?.resolve();
-        this.pendingWrite = { dps, resolve, reject };
+        const mergedDps = this.pendingWrite ? { ...this.pendingWrite.dps, ...dps } : dps;
+        this.pendingWrite = { dps: mergedDps, resolve, reject };
         return;
       }
       this.writing = true;

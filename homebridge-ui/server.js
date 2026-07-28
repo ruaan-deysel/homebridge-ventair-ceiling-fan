@@ -21,7 +21,11 @@ import { TuyaCloud } from '../dist/tuya/cloud.js';
  * `fetchKeys` above: testable without booting the IPC-bound `HomebridgePluginUiServer`.
  * Throws `RequestError`; returns nothing on success.
  */
-export function validateKeysRequest({ clientId, secret, ids }) {
+export function validateKeysRequest(body) {
+  if (typeof body !== 'object' || body === null) {
+    throw new RequestError('request body must be an object');
+  }
+  const { clientId, secret, ids } = body;
   if (typeof clientId !== 'string' || !clientId) {
     throw new RequestError('clientId must be a non-empty string');
   }

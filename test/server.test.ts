@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { RequestError } from '@homebridge/plugin-ui-utils';
 import { fetchKeys, validateKeysRequest } from '../homebridge-ui/server.js';
 
 function fakeCloud(byId: Record<string, unknown>) {
@@ -45,6 +46,12 @@ describe('/keys validateKeysRequest()', () => {
   // requests) at all — every case below must throw before any network call is possible.
   it('accepts a well-formed payload', () => {
     expect(() => validateKeysRequest({ clientId: 'id', secret: 'sec', ids: ['a'] })).not.toThrow();
+  });
+
+  it('rejects a null or missing body with a RequestError instead of throwing a TypeError on destructure', () => {
+    expect(() => validateKeysRequest(null)).toThrow(RequestError);
+    expect(() => validateKeysRequest(undefined)).toThrow(RequestError);
+    expect(() => validateKeysRequest('not an object')).toThrow(RequestError);
   });
 
   it('rejects a missing/empty clientId', () => {
