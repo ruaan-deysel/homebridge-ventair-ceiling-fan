@@ -1513,8 +1513,8 @@ Discovery must run where the fans are — the Homebridge container, which uses h
 
 ```bash
 npm run build
-sshpass -p "$UNRAID_PW" scp dist/tuya/discovery.js root@192.0.2.10:/tmp/
-sshpass -p "$UNRAID_PW" ssh root@192.0.2.10 \
+sshpass -p "$UNRAID_PW" scp dist/tuya/discovery.js root@<bridge-host>:/tmp/
+sshpass -p "$UNRAID_PW" ssh root@<bridge-host> \
   'docker cp /tmp/discovery.js homebridge:/tmp/ && docker exec homebridge node -e "
     import(\"/tmp/discovery.js\").then(async m => console.log(await m.discover(15000)))
   "'
@@ -2452,8 +2452,8 @@ Expected: all three pass. Do not deploy otherwise.
 ```bash
 npm pack
 TARBALL=$(ls homebridge-ventair-ceiling-fan-2.0.0.tgz)
-sshpass -p "$UNRAID_PW" scp "$TARBALL" root@192.0.2.10:/tmp/
-sshpass -p "$UNRAID_PW" ssh root@192.0.2.10 \
+sshpass -p "$UNRAID_PW" scp "$TARBALL" root@<bridge-host>:/tmp/
+sshpass -p "$UNRAID_PW" ssh root@<bridge-host> \
   "docker cp /tmp/$TARBALL homebridge:/tmp/ && \
    docker exec homebridge npm install --prefix /var/lib/homebridge /tmp/$TARBALL"
 ```
@@ -2496,7 +2496,7 @@ Note `ip` is deliberately omitted — this exercises discovery.
 ```bash
 curl -s -X PUT "http://192.0.2.10:8581/api/server/restart" -H "Authorization: Bearer $TOKEN"
 sleep 25
-sshpass -p "$UNRAID_PW" ssh root@192.0.2.10 'docker logs --tail 120 homebridge'
+sshpass -p "$UNRAID_PW" ssh root@<bridge-host> 'docker logs --tail 120 homebridge'
 ```
 
 Expected: `Adding new ceiling fan: Family Room Fan`, a `connected` line, no `ERR_REQUIRE_ESM`, no characteristic warnings. Confirm no 16-character key string appears anywhere in the output.
