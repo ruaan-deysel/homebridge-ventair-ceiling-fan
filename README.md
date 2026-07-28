@@ -95,6 +95,32 @@ Also breaking: Node 18/20 are no longer supported, and `hasLight` now defaults t
 
 See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
+## Homebridge verified-plugin compliance
+
+How this plugin currently maps to Homebridge's verified-plugin requirements:
+
+| Requirement | Status |
+| --- | --- |
+| Dynamic platform | Yes — implements `DynamicPlatformPlugin`. |
+| Does not duplicate an existing verified plugin | Judgement call for the Homebridge team, not something this repo can self-certify. Verified Tuya platform plugins already exist, but this one is device-specific to the Ventair Skyfan DC rather than a general Tuya integration. |
+| Published to npm, with GitHub source and issues enabled | Source is on GitHub with issues enabled; **not yet published to npm**. |
+| A GitHub release per version, with notes | `.github/workflows/release.yml` creates a GitHub release from the matching `CHANGELOG.md` section whenever a `v*` tag is pushed. |
+| Runs on all supported LTS Node versions | CI (`.github/workflows/ci.yml`) runs the test suite on Node 22.x and 24.x. |
+| Installs successfully, doesn't start unless configured | Yes — the platform returns cleanly (with a warning) when no devices are configured. |
+| No post-install scripts modifying the system | Yes — no `postinstall`/`preinstall` scripts. |
+| No TTY requirement | Yes — no interactive prompts. |
+| Implements the Settings GUI | Yes — `homebridge-ui` provides network scan and Tuya IoT key lookup. |
+| No analytics or user tracking | Yes — the only network calls are to the configured Tuya devices and the Tuya IoT API used for key lookup. |
+| Files written go in the Homebridge storage directory | Yes — the plugin performs no disk writes of its own. |
+| Must not throw unhandled exceptions; catches and logs its own errors | Every device write is wrapped in try/catch or `.catch()` that logs at `warn` with the device name, so one fan's write failure cannot crash the bridge. |
+
+### Known upstream warning
+
+`npm install` prints a deprecation warning for `q@1.1.2`. It comes from
+`homebridge` → `@homebridge/hap-nodejs` → `node-persist`, three levels upstream of this
+plugin. It is not fixable here without `overrides`/`resolutions`/patching, which risks
+breaking `hap-nodejs`, so it is left alone and documented instead.
+
 ## Plugin icon
 
 Homebridge resolves plugin icons from its central

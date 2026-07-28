@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  github-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+
+          if [ ! -s release-notes.md ]; then
+            echo "No matching CHANGELOG.md section for ${GITHUB_REF_NAME}; falling back to a blank body." >&2
+          fi
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: release-notes.md
+          generate_release_notes: true
+
+  # Publishing to npm is intentionally NOT automated here — it's the repo owner's call and
+  # needs their npm credentials. To enable it: add an NPM_TOKEN secret (npm access token with
+  # publish rights), uncomment the job below, and drop this comment.
+  #
+  # npm-publish:
+  #   needs: github-release
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v7
+  #     - uses: actions/setup-node@v7
+  #       with:
+  #         node-version: 24.x
+  #         registry-url: 'https://registry.npmjs.org'
+  #         cache: 'npm'
+  #     - run: npm ci
+  #     - run: npm publish
+  #       env:
+  #         NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

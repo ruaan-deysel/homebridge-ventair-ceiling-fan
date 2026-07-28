@@ -162,11 +162,15 @@ export class MatterFanBridge {
   private readonly callbacks: MatterFanCallbacks = {
     setPower: on => {
       const speedStep = on && this.state.speedStep === 0 ? 1 : this.state.speedStep;
-      void this.write(on ? { power: true, speedStep } : { power: false });
+      this.write(on ? { power: true, speedStep } : { power: false }).catch(error => {
+        this.log.warn(`[${this.device.name}] Matter setPower failed:`, error instanceof Error ? error.message : error);
+      });
     },
     setPercent: percent => {
       const step = percentToStep(percent);
-      void this.write(step === 0 ? { power: false } : { power: true, speedStep: step });
+      this.write(step === 0 ? { power: false } : { power: true, speedStep: step }).catch(error => {
+        this.log.warn(`[${this.device.name}] Matter setPercent failed:`, error instanceof Error ? error.message : error);
+      });
     },
   };
 

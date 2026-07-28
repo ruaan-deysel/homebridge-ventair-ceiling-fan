@@ -68,7 +68,7 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
     }
 
     this.removeStaleAccessories();
-    this.removeStaleMatterAccessories();
+    await this.removeStaleMatterAccessories();
   }
 
   private async setupDevice(device: VentairDevice, uuid: string, addresses: Map<string, string>): Promise<void> {
@@ -154,7 +154,7 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
   }
 
   /** Same as `removeStaleAccessories`, for devices that had Matter turned off or removed. */
-  private removeStaleMatterAccessories(): void {
+  private async removeStaleMatterAccessories(): Promise<void> {
     if (!this.api.isMatterEnabled() || !this.api.matter) {
       return;
     }
@@ -170,6 +170,10 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
       this.log.info('Removing Matter accessory no longer in config:', accessory.displayName);
       this.matterAccessories.delete(accessory.UUID);
     }
-    void this.api.matter.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
+    try {
+      await this.api.matter.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
+    } catch (error) {
+      this.log.warn('Removing stale Matter accessories failed:', error instanceof Error ? error.message : error);
+    }
   }
 }

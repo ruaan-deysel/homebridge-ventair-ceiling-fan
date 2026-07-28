@@ -179,6 +179,20 @@ describe('fan control', () => {
     expect(switches[0]).toBe(subtyped);
   });
 
+  it('logs and does not throw when a transport write rejects', async () => {
+    const { platform, accessory, device, handlers } = harness({ exposeModeSwitches: true });
+    const transport = new FakeTuyaDevice();
+    await transport.connect();
+    vi.spyOn(transport, 'set').mockRejectedValue(new Error('device unreachable'));
+    new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
+
+    await expect(handlers.get('Sleep.On')?.onSet?.(true)).resolves.toBeUndefined();
+    expect(platform.log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('write failed'),
+      'device unreachable',
+    );
+  });
+
   it('removes every Sleep switch when exposeModeSwitches is off, not just the subtyped one', async () => {
     const { platform, accessory, device } = harness({ exposeModeSwitches: false });
     accessory.addService('Switch', 'Sleep');
