@@ -515,6 +515,9 @@ export const DP = {
   mode: '2',
   speed: '3',
   direction: '8',
+  /** Present on the hardware but deliberately not implemented — see the spec. */
+  countdown: '22',
+  /** Unverified: no unit in this deployment has a light. */
   lightPower: '15',
   lightBrightness: '16',
 } as const;
