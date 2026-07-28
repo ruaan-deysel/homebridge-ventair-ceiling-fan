@@ -133,10 +133,13 @@ Imported by both `platform.ts` (runtime IP/version resolution) and `homebridge-u
 
 - **`SwingMode` is removed.** Auto-vs-manual maps to Fanv2's `TargetFanState`
   (`AUTO`/`MANUAL`). Any remaining device modes with no HomeKit equivalent are exposed as
-  individual `Switch` services behind a config flag defaulting to off.
-- **Mode and brightness mappings are provisional** until DPS 2's real enum and DPS 16's real
-  range are read from a live fan. The existing `nature`/`smart`/`sleep` values and the 0–100
-  brightness assumption are both unverified; Tuya dimmers commonly use 10–1000.
+  individual `Switch` services behind the config flag `exposeModeSwitches`, default `false`.
+- **Mode and brightness mappings are provisional.** The existing `nature`/`smart`/`sleep`
+  values and the 0–100 brightness assumption are both unverified; Tuya dimmers commonly use
+  10–1000. **Resolution step:** once a local key is available, connect to one fan and call
+  `get({ schema: true })` to dump DPS 2's real enum and DPS 16's declared range, then fix both
+  mappings in `dps.ts` before any accessory work is considered complete. This is a blocking
+  prerequisite for the `dps.ts` task, not a follow-up.
 - **Service names:** fan service keeps the device name, light service becomes `"<name> Light"`.
   Both gain `ConfiguredName`.
 - **Offline honesty:** when the transport is disconnected, `onGet` throws
@@ -190,6 +193,9 @@ are not.
   reviewable as a diff.
 - `dist/` moves to `.gitignore` and is built by CI rather than committed.
 - GitHub Actions: lint + test + build on Node 22 and 24.
+- `.env` holds the bridge and host credentials used for deployment and is `.gitignore`d. It
+  must never be committed, and no credential — bridge password, host password, Tuya local key,
+  or Tuya cloud secret — may appear in source, tests, CI config, or log output.
 
 ## Testing
 
@@ -216,7 +222,7 @@ lint + test + build  →  npm pack  →  scp to bridge-host  →  docker cp into
 All steps were exercised successfully during design (UI auth, plugin listing, SSH to host,
 `docker exec` into the container).
 
-**Rollout is staged: one fan proven first, then all eight.** These are live ceiling fans in a
+**Rollout is staged: one fan proven first, then all eight.** These are live ceiling fans in an
 occupied house, and an 8-device reconnect storm is precisely the failure this rework exists to
 prevent.
 
