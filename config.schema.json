@@ -2,6 +2,7 @@
   "pluginAlias": "HomebridgeVentairCeilingFan",
   "pluginType": "platform",
   "singular": true,
+  "headerDisplay": "Control Ventair Skyfan DC ceiling fans locally over your network. Use the Scan button to find fans, or fetch local keys from your Tuya IoT account.",
   "schema": {
     "type": "object",
     "properties": {
@@ -13,51 +14,85 @@
       },
       "devices": {
         "type": "array",
-        "title": "Devices",
+        "title": "Fans",
         "items": {
           "type": "object",
           "properties": {
+            "name": {
+              "type": "string",
+              "title": "Name",
+              "required": true,
+              "description": "Shown in the Home app, e.g. Lounge Room Fan"
+            },
             "id": {
               "type": "string",
-              "title": "ID",
-              "description": "Tuya device ID",
-              "required": true
+              "title": "Device ID",
+              "required": true,
+              "description": "Tuya device ID"
             },
             "key": {
               "type": "string",
-              "title": "Key",
-              "description": "Tuya device key",
-              "required": true
-            },
-            "ip": {
-              "type": "string",
-              "title": "IP",
-              "description": "Tuya device IP",
-              "required": false
-            },
-            "version": {
-              "type": "string",
-              "title": "Version",
-              "description": "Tuya device version",
-              "default": "3.3",
-              "required": false
-            },
-            "name": {
-              "type": "string",
-              "title": "Device Name",
-              "description": "Name of the device",
+              "title": "Local Key",
               "required": true,
-              "default": "Ventair Skyfan DC Ceiling Fan"
+              "format": "password",
+              "description": "16-character Tuya local key"
             },
             "hasLight": {
               "type": "boolean",
-              "title": "Has Light",
-              "description": "Device has a light ?",
-              "required": true
+              "title": "Fan has a light",
+              "default": false,
+              "description": "Enable only if your fan has an integrated light. Light support is currently untested."
+            },
+            "exposeModeSwitches": {
+              "type": "boolean",
+              "title": "Expose mode switches",
+              "default": false,
+              "description": "Adds Nature, Sleep and Smart switches to this fan in the Home app."
+            },
+            "ip": {
+              "type": "string",
+              "title": "IP Address",
+              "required": false,
+              "description": "Leave blank to discover automatically."
+            },
+            "version": {
+              "type": "string",
+              "title": "Protocol Version",
+              "default": "3.3",
+              "required": false,
+              "oneOf": [
+                { "title": "3.1", "enum": ["3.1"] },
+                { "title": "3.2", "enum": ["3.2"] },
+                { "title": "3.3", "enum": ["3.3"] },
+                { "title": "3.4", "enum": ["3.4"] },
+                { "title": "3.5", "enum": ["3.5"] }
+              ]
             }
           }
         }
       }
     }
-  }
+  },
+  "layout": [
+    { "key": "name" },
+    {
+      "key": "devices",
+      "type": "array",
+      "title": "Fans",
+      "items": [
+        "devices[].name",
+        "devices[].id",
+        "devices[].key",
+        "devices[].hasLight",
+        "devices[].exposeModeSwitches",
+        {
+          "type": "fieldset",
+          "title": "Advanced",
+          "expandable": true,
+          "expanded": false,
+          "items": ["devices[].ip", "devices[].version"]
+        }
+      ]
+    }
+  ]
 }
