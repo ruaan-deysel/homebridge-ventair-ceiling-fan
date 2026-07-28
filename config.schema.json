@@ -49,6 +49,12 @@
               "default": false,
               "description": "Adds Nature, Sleep and Smart switches to this fan in the Home app."
             },
+            "exposeMatter": {
+              "type": "boolean",
+              "title": "Expose to Matter",
+              "default": false,
+              "description": "Also expose this fan as a Matter device, for non-Apple ecosystems. Matter is beta in Homebridge — enable Matter on this bridge first, or this has no effect."
+            },
             "ip": {
               "type": "string",
               "title": "IP Address",
@@ -85,6 +91,7 @@
         "devices[].key",
         "devices[].hasLight",
         "devices[].exposeModeSwitches",
+        "devices[].exposeMatter",
         {
           "type": "fieldset",
           "title": "Advanced",

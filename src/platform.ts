@@ -1,7 +1,8 @@
-import type { API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
+import type { API, Characteristic, DynamicPlatformPlugin, Logging, MatterAccessory, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
 
 import { CeilingFanAccessory } from './accessory.js';
 import { parseDevices, type VentairDevice } from './config.js';
+import { MatterFanBridge } from './matter.js';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
 import { discover } from './tuya/discovery.js';
 import { TuyapiDevice } from './tuya/tuyapi.js';
@@ -11,7 +12,9 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
   public readonly Characteristic: typeof Characteristic;
 
   public readonly accessories: Map<string, PlatformAccessory> = new Map();
+  public readonly matterAccessories: Map<string, MatterAccessory> = new Map();
   private readonly discoveredCacheUUIDs: string[] = [];
+  private readonly discoveredMatterUUIDs: string[] = [];
   private readonly devices: VentairDevice[];
 
   constructor(
@@ -36,6 +39,12 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
   configureAccessory(accessory: PlatformAccessory): void {
     this.log.info('Loading accessory from cache:', accessory.displayName);
     this.accessories.set(accessory.UUID, accessory);
+  }
+
+  /** The Matter twin of `configureAccessory` — tracks cached Matter accessories on startup. */
+  configureMatterAccessory(accessory: MatterAccessory): void {
+    this.log.info('Loading Matter accessory from cache:', accessory.displayName);
+    this.matterAccessories.set(accessory.UUID, accessory);
   }
 
   async discoverDevices(): Promise<void> {
@@ -70,9 +79,37 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
       }
 
       this.discoveredCacheUUIDs.push(uuid);
+
+      if (device.exposeMatter) {
+        await this.registerMatter(device, transport);
+      }
     }
 
     this.removeStaleAccessories();
+    this.removeStaleMatterAccessories();
+  }
+
+  /**
+   * Matter is beta and off by default — `api.matter` throws if accessed on a bridge
+   * without Matter configured, so both `isMatterEnabled()` and optional chaining guard
+   * every access.
+   */
+  private async registerMatter(device: VentairDevice, transport: TuyapiDevice): Promise<void> {
+    if (!this.api.isMatterEnabled() || !this.api.matter) {
+      this.log.warn(`Matter requested for "${device.name}" but Matter is not enabled on this bridge; skipping.`);
+      return;
+    }
+
+    const hapUuid = this.api.hap.uuid.generate(device.id);
+    const bridge = new MatterFanBridge(this.api.matter, device, hapUuid, transport, this.log);
+    const accessory = bridge.buildAccessory();
+
+    if (!this.matterAccessories.has(bridge.uuid)) {
+      this.log.info('Adding new Matter fan:', device.name);
+      await this.api.matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+    }
+    this.matterAccessories.set(bridge.uuid, accessory);
+    this.discoveredMatterUUIDs.push(bridge.uuid);
   }
 
   /** Only run discovery if at least one device is missing an explicit address. */
@@ -104,5 +141,25 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
       this.accessories.delete(accessory.UUID);
     }
     this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
+  }
+
+  /** Same as `removeStaleAccessories`, for devices that had Matter turned off or removed. */
+  private removeStaleMatterAccessories(): void {
+    if (!this.api.isMatterEnabled() || !this.api.matter) {
+      return;
+    }
+    const stale = [...this.matterAccessories.entries()]
+      .filter(([uuid]) => !this.discoveredMatterUUIDs.includes(uuid))
+      .map(([, accessory]) => accessory);
+
+    if (stale.length === 0) {
+      return;
+    }
+
+    for (const accessory of stale) {
+      this.log.info('Removing Matter accessory no longer in config:', accessory.displayName);
+      this.matterAccessories.delete(accessory.UUID);
+    }
+    void this.api.matter.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
   }
 }
