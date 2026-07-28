@@ -2561,6 +2561,130 @@ git tag -a v2.0.0 -m "Homebridge v2 support, ESM, Zod config validation"
 
 ---
 
+### Task #13: Matter support (opt-in)
+
+**Goal:** Expose each fan as a Matter device alongside HAP, so non-Apple ecosystems can control it.
+
+**Files:**
+- Create: `src/matter.ts`, `test/matter.test.ts`
+- Modify: `src/platform.ts`, `src/config.ts`, `config.schema.json`
+
+**Verified environment (checked 2026-07-28):** Matter is enabled on the target bridge —
+`bridge.matter.port: 5530` in config, and the log confirms `Matter server started successfully
+on port 5530`, `Plugins can now register Matter accessories via the API`, Matter.js v0.17.6,
+`No cached Matter accessories found (first run)`.
+
+**Acceptance Criteria:**
+- [ ] New config flag `exposeMatter`, **default `false`** — Matter is beta in Homebridge, and this
+      plugin is published for other users whose bridges may not have it enabled
+- [ ] Guarded with `api.isMatterEnabled()` and optional chaining (`api.matter?.`) — `api.matter`
+      is `MatterAPI | undefined` and throws if accessed on a non-Matter bridge
+- [ ] Registers `deviceTypes.Fan` with `onOff` and `fanControl` clusters
+- [ ] `fanControl` populated with `speedMax: 5`, plus `percentSetting`/`percentCurrent` and
+      `speedSetting`/`speedCurrent` kept in step with the HAP state
+- [ ] Handlers wired: `onOff` change, `fanControl.percentSettingChange`, `fanControl.fanModeChange`
+- [ ] Inbound device updates push to Matter via `updateAccessoryState(uuid, clusterName, state)`
+- [ ] `configureMatterAccessory` implemented on the platform to track cached Matter accessories
+- [ ] Stale Matter accessories unregistered via `api.matter.unregisterPlatformAccessories`
+- [ ] Reuses `dps.ts` — **no new speed or mode arithmetic anywhere**
+- [ ] Matter UUID must NOT collide with the HAP UUID for the same device
+- [ ] CHANGELOG fragment to `changelog-13.md`
+
+**Known limitation to document, not work around:** Matter's `FanControl` cluster has no rotation
+direction attribute in the version exposed here, so reverse stays HAP-only. Say so in the README
+rather than faking it.
+
+**Verify:** `npx vitest run test/matter.test.ts && npm run lint && npm run build`, then on the
+live bridge confirm the fan appears as a Matter accessory and the Matter server logs the
+registration.
+
+**Steps:**
+
+- [ ] **Step 1: Add the config flag**
+
+Extend `DeviceSchema` in `src/config.ts`:
+
+```ts
+exposeMatter: z.boolean().default(false),
+```
+
+and add the matching `config.schema.json` property with a description noting Matter is beta and
+must be enabled on the bridge first.
+
+- [ ] **Step 2: Write the failing tests**
+
+```ts
+// test/matter.test.ts
+import { describe, expect, it, vi } from 'vitest';
+import { buildMatterAccessory } from '../src/matter.js';
+
+const matterApi = {
+  deviceTypes: { Fan: 'FanDevice' },
+  clusterNames: { OnOff: 'onOff', FanControl: 'fanControl' },
+};
+
+const device = { id: 'a'.repeat(20), key: 'x'.repeat(16), name: 'Test Fan' };
+
+describe('buildMatterAccessory', () => {
+  it('declares a Fan device with onOff and fanControl clusters', () => {
+    const acc = buildMatterAccessory(matterApi as never, 'uuid-1', device as never, {
+      power: true, speedStep: 3, mode: 'normal', direction: 'forward',
+      lightPower: false, lightBrightness: 100,
+    });
+    expect(acc.deviceType).toBe('FanDevice');
+    expect(acc.clusters.onOff.onOff).toBe(true);
+    expect(acc.clusters.fanControl.speedMax).toBe(5);
+    expect(acc.clusters.fanControl.speedCurrent).toBe(3);
+    expect(acc.clusters.fanControl.percentCurrent).toBe(60);
+  });
+
+  it('reports 0% and off when the fan is stopped', () => {
+    const acc = buildMatterAccessory(matterApi as never, 'uuid-1', device as never, {
+      power: false, speedStep: 0, mode: 'normal', direction: 'forward',
+      lightPower: false, lightBrightness: 100,
+    });
+    expect(acc.clusters.onOff.onOff).toBe(false);
+    expect(acc.clusters.fanControl.percentCurrent).toBe(0);
+  });
+
+  it('uses a UUID distinct from the HAP accessory UUID', () => {
+    const a = buildMatterAccessory(matterApi as never, 'uuid-hap', device as never, {} as never);
+    expect(a.UUID).not.toBe('uuid-hap');
+  });
+});
+```
+
+- [ ] **Step 3: Implement `src/matter.ts`**
+
+Build the accessory descriptor from the shared `FanState`, converting with `dps.ts` helpers
+only. Derive the Matter UUID from the device id plus a `matter:` prefix so it cannot collide
+with the HAP UUID.
+
+- [ ] **Step 4: Wire into the platform**
+
+Guard registration:
+
+```ts
+if (device.exposeMatter && this.api.isMatterEnabled() && this.api.matter) {
+  // register, wire handlers, and push state on updates
+}
+```
+
+Implement `configureMatterAccessory(accessory)` to track cached Matter accessories in a Map,
+mirroring the HAP `configureAccessory` path, and unregister stale ones.
+
+- [ ] **Step 5: Verify and commit**
+
+```bash
+npx vitest run && npm run lint && npm run build
+```
+
+```json:metadata
+{"files": ["src/matter.ts", "test/matter.test.ts", "src/platform.ts", "src/config.ts", "config.schema.json"], "verifyCommand": "npx vitest run && npm run lint && npm run build", "acceptanceCriteria": ["exposeMatter flag defaults false", "guarded by isMatterEnabled and optional chaining", "Fan device type with onOff and fanControl clusters", "handlers wired for onOff and percentSetting", "inbound updates pushed via updateAccessoryState", "configureMatterAccessory implemented", "stale matter accessories unregistered", "reuses dps.ts with no new arithmetic", "matter UUID distinct from HAP UUID"], "modelTier": "standard"}
+```
+
+---
+
 ### Task #12: Adversarial review of the completed work
 
 **Goal:** Have Codex challenge the design decisions, not just hunt for defects, before this ships.
