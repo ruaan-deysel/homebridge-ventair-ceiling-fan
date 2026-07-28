@@ -2604,19 +2604,32 @@ git tag -a v2.0.0 -m "Homebridge v2 support, ESM, Zod config validation"
 
 **Steps:**
 
-- [ ] **Step 1: Ask the user to invoke the review**
+- [ ] **Step 1: Run the adversarial review directly**
 
-This command is marked `disable-model-invocation: true` in the plugin manifest, so it
-**cannot be triggered by the agent** — it must be typed by the user. Do not attempt to work
-around this by calling `codex-companion.mjs` directly.
+The slash command carries `disable-model-invocation: true`, so the SlashCommand tool cannot
+invoke it — but **the user explicitly authorised running the companion script directly**
+(2026-07-28). Invoke the same runtime the command wraps:
 
-Prompt the user:
+```bash
+node "$HOME/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/codex-companion.mjs" \
+  adversarial-review --background --base <baseline-commit> \
+  "design assumptions, the TuyaDevice seam, reconnect backoff under 8 concurrent devices, the mode-switch modelling, and whether preserving unknown DPS mode values is the right call"
+```
 
-> Ready for the adversarial review. Please run:
-> `/codex:adversarial-review --background --base <baseline-commit> design assumptions, the TuyaDevice seam, reconnect backoff under 8 concurrent devices, and the mode-switch modelling`
+The baseline is the `Baseline: homebridge-ventair-ceiling-fan v1.0.4 as received` commit, so
+the review sees the whole modernisation as one diff.
 
-The baseline commit is the `Baseline: homebridge-ventair-ceiling-fan v1.0.4 as received`
-commit, so the review sees the entire modernisation as one diff.
+- [ ] **Step 1b: Second opinion via CodeRabbit**
+
+The user also has the CodeRabbit CLI available. Run it over the same range as an independent
+pass — two reviewers with different training disagree in useful ways:
+
+```bash
+coderabbit review --base <baseline-commit>
+```
+
+Reconcile the two reports: findings both raise are high-confidence; findings only one raises
+still need triage, not automatic dismissal.
 
 - [ ] **Step 2: Triage every finding**
 
