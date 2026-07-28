@@ -6,3 +6,5 @@ node_modules/
 .remember/
 npm-debug.log*
 scripts/
+graphify-out/
+.superpowers/
