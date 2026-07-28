@@ -103,7 +103,7 @@ How this plugin currently maps to Homebridge's verified-plugin requirements:
 | --- | --- |
 | Dynamic platform | Yes — implements `DynamicPlatformPlugin`. |
 | Does not duplicate an existing verified plugin | Judgement call for the Homebridge team, not something this repo can self-certify. Verified Tuya platform plugins already exist, but this one is device-specific to the Ventair Skyfan DC rather than a general Tuya integration. |
-| Published to npm, with GitHub source and issues enabled | Source is on GitHub with issues enabled; **not yet published to npm**. |
+| Published to npm, with GitHub source and issues enabled | Yes — published as [`homebridge-ventair-ceiling-fan`](https://www.npmjs.com/package/homebridge-ventair-ceiling-fan), source on GitHub with issues enabled. |
 | A GitHub release per version, with notes | `.github/workflows/release.yml` creates a GitHub release from the matching `CHANGELOG.md` section whenever a `v*` tag is pushed. |
 | Runs on all supported LTS Node versions | CI (`.github/workflows/ci.yml`) runs the test suite on Node 22.x and 24.x. |
 | Installs successfully, doesn't start unless configured | Yes — the platform returns cleanly (with a warning) when no devices are configured. |
@@ -125,10 +125,12 @@ breaking `hap-nodejs`, so it is left alone and documented instead.
 
 Homebridge resolves plugin icons from its central
 [plugins registry](https://github.com/homebridge/plugins), keyed by npm package name —
-there is no `package.json` field for it. `branding/icon.png` is prepared for that request,
-which can be raised at
-[homebridge/plugins](https://github.com/homebridge/plugins/issues/new/choose) once this
-package is published under its final name.
+there is no `package.json` field for it, and shipping an image in the package has no effect.
+
+`branding/icon.png` is an original generic fan mark (deliberately not Ventair branding,
+since this is an unofficial plugin). The package is already published under its final name,
+so the icon request can be raised at
+[homebridge/plugins](https://github.com/homebridge/plugins/issues/new/choose).
 
 ## Thanks
 
