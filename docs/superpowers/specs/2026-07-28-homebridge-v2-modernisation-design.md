@@ -50,8 +50,27 @@ Discovered device IDs and addresses:
 192.0.2.14   bf04000000000000000a    192.0.2.18  bf08000000000000000a
 ```
 
-Local keys are not present in UDP broadcasts and will be fetched from the user's Tuya IoT
-cloud project.
+Local keys are not present in UDP broadcasts. They were fetched from the user's Tuya IoT cloud
+project and confirmed for all 8 units, which map to:
+
+| Room | IP |
+|---|---|
+| Family Room Fan | 192.0.2.11 |
+| Office 1 Fan | 192.0.2.12 |
+| Lounge Room Fan | 192.0.2.13 |
+| Guest Room Fan | 192.0.2.14 |
+| Master Bedroom Fan | 192.0.2.15 |
+| Leisure Room Fan | 192.0.2.16 |
+| Alfresco Fan | 192.0.2.17 |
+| Office 2 Fan | 192.0.2.18 |
+
+All report product `Skyfan DC` and were online at time of writing. **Keys are not recorded in
+this document or anywhere in the repository.**
+
+Every key is exactly 16 characters, confirming the `z.string().length(16)` rule. Keys contain
+shell- and JSON-hostile characters (`` ` ``, `|`, `$`, `<`, `!`, `?`, `'`, `"`), so config
+handling and any deployment scripting must quote them correctly — a naive shell interpolation
+will corrupt them.
 
 ## Decisions
 
@@ -89,16 +108,37 @@ Pure functions `toFanState(dps)` and `toDps(change)`, with the DPS table defined
 All speed conversion, mode mapping, and brightness scaling live here. No I/O, fully unit
 testable. This eliminates the three-places-must-agree hazard.
 
-DPS table (protocol 3.3, product key `vzj97d3m05yjhchn`):
+DPS table (protocol 3.3, product key `vzj97d3m05yjhchn`, category `fs`). Verified against the
+Tuya cloud device specification for all 8 units — every unit reports an identical spec:
 
-| DPS | Meaning | Values |
-|-----|---------|--------|
-| 1 | fan power | boolean |
-| 2 | fan mode | enum — **actual values to be confirmed against device** |
-| 3 | fan speed | 1–5 |
-| 8 | rotation direction | `forward` \| `reverse` |
-| 15 | light power | boolean |
-| 16 | light brightness | **scale to be confirmed against device** |
+| Code | Type | Values | Current numeric DP assumption |
+|------|------|--------|-------------------------------|
+| `switch` | Boolean | — | 1 |
+| `mode` | Enum | `nature`, `sleep`, `smart` | 2 |
+| `fan_speed_percent` | Integer | min 1, max 5, step 1 | 3 |
+| `fan_direction` | Enum | `forward`, `reverse` | 8 |
+| `countdown_set` | Enum | `cancel`, `1h`…`12h` | not implemented |
+
+**Confirmed:** the `nature`/`sleep`/`smart` enum matches the existing code, and speed really is
+1–5, so the ×20/÷20 conversion is correct.
+
+**Still unverified:** the cloud API returns DP *codes*, not the numeric DP indices used by the
+local protocol. The numeric column above is the existing code's assumption and must be
+confirmed by dumping `get({ schema: true })` from a fan over the LAN during task #10.
+
+**Not present on this hardware:** there are no light DPs. None of the 8 units has a light, so
+DPS 15/16 do not exist here.
+
+### Light support
+
+The published plugin advertises light on/off and brightness, and Ventair ships light-equipped
+Skyfan DC variants, so light support is **retained** — removing it would break existing users
+of the public npm package.
+
+It cannot, however, be verified: this deployment has no light hardware. Light handling ships
+**untested**, and the 0–100 brightness assumption for DPS 16 remains unconfirmed. Tuya dimmers
+commonly use 10–1000, so `dps.ts` keeps `brightnessScale` as an explicit, overridable value
+rather than a hardcoded constant, and the README notes the limitation.
 
 ### `tuya/device.ts` — the transport seam
 
@@ -131,15 +171,17 @@ Imported by both `platform.ts` (runtime IP/version resolution) and `homebridge-u
 
 ## HomeKit modelling
 
-- **`SwingMode` is removed.** Auto-vs-manual maps to Fanv2's `TargetFanState`
-  (`AUTO`/`MANUAL`). Any remaining device modes with no HomeKit equivalent are exposed as
-  individual `Switch` services behind the config flag `exposeModeSwitches`, default `false`.
-- **Mode and brightness mappings are provisional.** The existing `nature`/`smart`/`sleep`
-  values and the 0–100 brightness assumption are both unverified; Tuya dimmers commonly use
-  10–1000. **Resolution step:** once a local key is available, connect to one fan and call
-  `get({ schema: true })` to dump DPS 2's real enum and DPS 16's declared range, then fix both
-  mappings in `dps.ts` before any accessory work is considered complete. This is a blocking
-  prerequisite for the `dps.ts` task, not a follow-up.
+- **`SwingMode` is removed**, and `TargetFanState` is deliberately *not* used in its place. The
+  device spec has exactly three modes — `nature`, `sleep`, `smart` — and no manual mode, so
+  there is nothing to map `MANUAL` onto. Forcing a 3-way selector into a 2-way characteristic
+  would reproduce the exact lossiness that makes the `SwingMode` hack wrong.
+- **Mode is exposed as three mutually-exclusive `Switch` services** (Nature / Sleep / Smart)
+  behind the config flag `exposeModeSwitches`, default `false`. Selecting one clears the other
+  two; turning off the active switch is a no-op, since the device is always in some mode. Off
+  by default keeps the accessory a single clean fan tile.
+- **`countdown_set` is out of scope.** The hardware exposes a 1–12h timer that the plugin does
+  not implement. This project is a modernisation, not a feature expansion; the timer can be
+  proposed later on its own merits.
 - **Service names:** fan service keeps the device name, light service becomes `"<name> Light"`.
   Both gain `ConfiguredName`.
 - **Offline honesty:** when the transport is disconnected, `onGet` throws
@@ -155,7 +197,8 @@ const DeviceSchema = z.object({
   id:       z.string().regex(/^[0-9a-f]{16,26}$/i, 'Tuya device ID looks wrong'),
   key:      z.string().length(16, 'Tuya local keys are exactly 16 characters'),
   name:     z.string().min(1),
-  hasLight: z.boolean().default(true),
+  hasLight: z.boolean().default(false),
+  exposeModeSwitches: z.boolean().default(false),
   ip:       z.ipv4().optional(),          // auto-discovered when absent
   version:  z.enum(['3.1','3.2','3.3','3.4','3.5']).default('3.3'),
 })
@@ -168,7 +211,9 @@ for readable messages.
 never takes down the platform. One mistyped key out of eight costs one fan, not the bridge.
 
 `config.schema.json` is updated to match: `key` rendered as a password field, `ip`/`version`
-demoted to a collapsed Advanced section, `customUi: true`.
+demoted to a collapsed Advanced section, `customUi: true`, and `hasLight` changed from
+**required** to optional defaulting to `false` — as it stands, all 8 units would have to
+explicitly declare `hasLight: false` for hardware that has no light DPs at all.
 
 ## Custom settings UI
 
@@ -244,7 +289,11 @@ prevent.
   pointing 8 connections at them.
 - **Breaking change for existing users.** Removing `SwingMode` breaks any automation built on
   it. Must be called out explicitly in the 2.0.0 release notes.
-- **Provisional mappings.** Mode and brightness semantics are unconfirmed until a live device
-  is read; if DPS 16 turns out to be 1000-scale, every brightness value the plugin has ever
-  set has been wrong.
+- **Numeric DP indices unconfirmed.** The cloud spec gives DP *codes*, not the numeric indices
+  the local protocol uses. The 1/2/3/8 mapping is inherited from the existing code and must be
+  confirmed over the LAN before the accessory work is trusted.
+- **Light support ships untested.** No unit in this deployment has a light, so the DPS 15/16
+  paths and the 0–100 brightness scale cannot be exercised. If the scale is really 10–1000,
+  brightness has always been wrong for light-equipped users — we cannot tell from here, and
+  the README must say so rather than implying it works.
 - **`tuyapi` is stagnant.** Mitigated, not eliminated, by the `TuyaDevice` seam.
