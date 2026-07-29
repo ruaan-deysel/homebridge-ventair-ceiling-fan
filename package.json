@@ -9,10 +9,10 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/domalab/homebridge-ventair-ceiling-fan.git"
+    "url": "git+https://github.com/ruaan-deysel/homebridge-ventair-ceiling-fan.git"
   },
   "bugs": {
-    "url": "https://github.com/domalab/homebridge-ventair-ceiling-fan/issues"
+    "url": "https://github.com/ruaan-deysel/homebridge-ventair-ceiling-fan/issues"
   },
   "engines": {
     "homebridge": "^1.8.0 || ^2.0.0",

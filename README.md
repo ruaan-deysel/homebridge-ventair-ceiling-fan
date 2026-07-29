@@ -67,7 +67,7 @@ The plugin supports fans with an integrated light (`hasLight`), but **this path 
 untested**. No unit available during development had a light, so the brightness scale in
 particular is unverified — some Tuya dimmers report 0–100 and others 0–1000. If you have a
 light-equipped Skyfan, please
-[open an issue](https://github.com/domalab/homebridge-ventair-ceiling-fan/issues) with
+[open an issue](https://github.com/ruaan-deysel/homebridge-ventair-ceiling-fan/issues) with
 what you observe.
 
 ## Upgrading from 1.x
