@@ -37,7 +37,7 @@ into HomeKit.
 | DP | Meaning | Values |
 |----|---------|--------|
 | 1 | fan power | boolean |
-| 2 | fan mode | `'Normal'` \| `'Sleep'` \| `'Eco'` (capitalised on the wire; see below — the set is open) |
+| 2 | fan mode | `Normal` \| `Sleep` \| `Eco` — written capitalised, read back lowercase; the set is open (see below) |
 | 3 | fan speed | 1–5 |
 | 8 | rotation direction | `'forward'` \| `'reverse'` |
 | 15 | light power | boolean (untested — no unit here has a light) |
@@ -47,9 +47,12 @@ into HomeKit.
 Mode is **not** a two-value enum. An earlier write probe found that writing `nature`/`smart`
 over the LAN lands on Sleep, and this file used to conclude from that "there is no third
 mode". That conclusion was wrong: on 2026-07-29 a fan driven from the Smart Life app
-reported `{"mode":"eco"}` on DP 2, cycling eco → sleep → eco → normal. So at least three
+reported mode `eco` on DP 2, cycling eco → sleep → eco → normal. So at least three
 modes exist — the earlier probe showed only that those two *particular* strings are not
 writable over the LAN, not that the mode set is closed.
+
+(Case is not part of that: `toDeviceMode` capitalises on the way out and `toFanState`
+lowercases on the way in, so the same mode is `Eco` in a write and `eco` in state.)
 
 Whether `Eco` can be **written** over the LAN is still unknown: each fan accepts only one
 LAN session at a time, so a probe cannot run while the plugin holds the connection.

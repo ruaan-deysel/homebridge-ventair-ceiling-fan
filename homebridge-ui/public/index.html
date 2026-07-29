@@ -375,7 +375,13 @@
         for (const d of found) {
           discovered.set(d.id, { ip: d.ip, version: d.version });
         }
-        status.textContent = `Found ${found.length} fan(s) on the network.`;
+        // A zero-result scan is ambiguous — it looks the same whether nothing is online or
+        // the broadcasts never arrived (Docker bridge, AP client isolation, a VLAN that
+        // drops them). Badges are deliberately left alone in that case (see `badgeFor`),
+        // so say so rather than leaving a green badge to be read as "this fan answered".
+        status.textContent = found.length === 0
+          ? 'Found 0 fans. Nothing is online, or broadcasts are not reaching Homebridge — fan status left unchanged.'
+          : `Found ${found.length} fan(s) on the network.`;
         homebridge.toast.success(`Scan complete: ${found.length} fan(s) found`);
         renderAll();
       } catch (e) {

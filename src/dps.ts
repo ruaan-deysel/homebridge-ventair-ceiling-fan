@@ -17,10 +17,15 @@ export const DP = {
 } as const;
 
 /**
- * Modes reachable over the LAN, confirmed by write probe both powered off and running:
- * the device accepts only "Normal" and "Sleep". Anything else — including the cloud's
- * "nature" and "smart" — comes back as "Sleep", consistent with the firmware resolving
- * the enum by index and defaulting unknowns to index 1.
+ * Modes this plugin WRITES over the LAN: "Normal" and "Sleep". A write probe (both
+ * powered off and running) showed anything else — including the cloud's "nature" and
+ * "smart" — comes back as "Sleep", consistent with the firmware resolving the enum by
+ * index and defaulting unknowns to index 1.
+ *
+ * That is a fact about those two strings, NOT proof the mode set is closed: a fan driven
+ * from the Smart Life app reported "eco" (2026-07-29). Whether "Eco" is writable over the
+ * LAN is untested — a fan allows one LAN session, so it cannot be probed while the plugin
+ * holds the connection.
  *
  * Kept as a plain string type, not a union: the cloud specification was already wrong
  * once, so unrecognised values are preserved rather than discarded.

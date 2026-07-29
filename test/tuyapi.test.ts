@@ -226,12 +226,24 @@ describe('reconnect supervision', () => {
     // The device id identifies real hardware and used to be interpolated whole into
     // every warn/error message, so a user pasting a log into an issue published it.
     // A short suffix is enough to tell eight fans apart.
+    //
+    // Asserting on the ELLIPSIS-prefixed tag, not on the bare suffix: the full id ends
+    // with that suffix too, so `/00000a/` alone passes with or without the redaction.
     const realId = 'bf0000000000000000000a';
     const d = new TuyapiDevice({ ...opts, id: realId }, log);
+
     await expect(d.set({ '1': true })).rejects.toThrow(
       expect.objectContaining({ message: expect.not.stringContaining(realId) }),
     );
-    await expect(d.set({ '1': true })).rejects.toThrow(/00000a/);
+    await expect(d.set({ '1': true })).rejects.toThrow(/\[…00000a\]/);
+
+    // ...and the same for what actually reaches the Homebridge log, which is the path a
+    // user would paste into an issue. A failing connect is the cheapest logging site.
+    connect.mockRejectedValueOnce(new Error('nope'));
+    await d.connect();
+    const logged = logMocks.warn.mock.calls.flat().map(String).join(' ');
+    expect(logged).not.toContain(realId);
+    expect(logged).toContain('…00000a');
   });
 
   it('rejects the whole patch when the device disconnects between two datapoints', async () => {
