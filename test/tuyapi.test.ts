@@ -52,7 +52,11 @@ vi.mock('tuyapi', () => ({
 
 const { TuyapiDevice } = await import('../src/tuya/tuyapi.js');
 
-const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+const logMocks = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+// Homebridge's `Logging` is a callable interface with more members than these tests ever
+// touch; the stub is deliberately partial, cast once here rather than at ~35 call sites
+// (same `as never` pattern platform.test.ts uses).
+const log = logMocks as never;
 const opts = { id: 'abc123', key: 'x'.repeat(16), version: '3.3' as const };
 
 function fire(event: string) {
@@ -79,7 +83,7 @@ beforeEach(() => {
     }
     return { dps: { ...lastWrittenValue } };
   });
-  Object.values(log).forEach(m => m.mockReset());
+  Object.values(logMocks).forEach(m => m.mockReset());
   constructorSpy.mockClear();
   removeAllListeners.mockClear();
 });
@@ -124,7 +128,7 @@ describe('reconnect supervision', () => {
     connect.mockRejectedValue(new Error('refused'));
     d.connect();
     await vi.advanceTimersByTimeAsync(5000);
-    const all = JSON.stringify(Object.values(log).map(m => m.mock.calls));
+    const all = JSON.stringify(Object.values(logMocks).map(m => m.mock.calls));
     expect(all).not.toContain(opts.key);
   });
 

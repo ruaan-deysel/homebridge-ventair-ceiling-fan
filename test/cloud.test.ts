@@ -201,7 +201,7 @@ describe('TuyaCloud error mapping', () => {
   it('maps an invalid-credentials response code without echoing the secret', async () => {
     respondWith(200, { success: false, code: 1004, msg: 'sign invalid' });
     const cloud = new TuyaCloud(CLIENT_ID, SECRET, 'eu');
-    const error = await cloud.authenticate().catch(e => e as Error);
+    const error = (await cloud.authenticate().catch((e: unknown) => e)) as Error;
     expect(error.message).toMatch(/credentials/i);
     expect(error.message).not.toContain(SECRET);
     expect(error.message).not.toContain(CLIENT_ID);

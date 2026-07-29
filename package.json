@@ -37,7 +37,8 @@
     "ventair"
   ],
   "scripts": {
-    "lint": "eslint . --max-warnings=0",
+    "lint": "eslint . --max-warnings=0 && npm run typecheck",
+    "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run",
     "build": "rimraf ./dist && tsc",
     "watch": "npm run build && npm link && nodemon",
@@ -52,6 +53,7 @@
     "@eslint/js": "^10.0.1",
     "@types/node": "^24",
     "eslint": "^10.3.0",
+    "globals": "^17.8.0",
     "homebridge": "^2.0.0",
     "nodemon": "^3.1.14",
     "rimraf": "^6.1.3",
