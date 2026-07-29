@@ -21,6 +21,14 @@ export class CeilingFanAccessory {
 
   private readonly dpsOptions = { brightnessScale: DEFAULT_BRIGHTNESS_SCALE };
 
+  /**
+   * Which `write()` call last touched each key of `state`. Lets a failed write's
+   * rollback tell "nobody has touched this key since me" apart from "a newer write
+   * already landed here" — see `write()`/`reconcileAfterFailure`.
+   */
+  private readonly keyVersion: Partial<Record<keyof FanState, number>> = {};
+  private versionCounter = 0;
+
   constructor(
     private readonly platform: HomebridgeVentairCeilingFan,
     private readonly accessory: PlatformAccessory,
@@ -165,22 +173,67 @@ export class CeilingFanAccessory {
     );
   }
 
-  /** Optimistic local update, one `set()` call per datapoint. Rolled back on failure. */
+  /**
+   * Optimistic local update, one `set()` call per datapoint. Rolled back on failure —
+   * but only for keys this write still "owns" (nothing newer has touched them since):
+   * two concurrent writes can be in flight together (e.g. a queued speed change and an
+   * unrelated direction change), and if the OLDER one fails after the NEWER one has
+   * already applied its own optimistic state and entered the queue, blindly restoring
+   * this write's snapshot would stomp the newer command's value even though the newer
+   * write is going to succeed. See `reconcileAfterFailure` for the version-gated rollback.
+   */
   private async write(patch: Partial<FanState>): Promise<void> {
     const previous = {} as Partial<FanState>;
+    const version = ++this.versionCounter;
     (Object.keys(patch) as (keyof FanState)[]).forEach(key => {
       (previous as Record<keyof FanState, unknown>)[key] = this.state[key];
+      this.keyVersion[key] = version;
     });
     Object.assign(this.state, patch);
     try {
       await this.transport.set(toDps(patch, this.dpsOptions));
     } catch (error) {
-      Object.assign(this.state, previous);
+      await this.reconcileAfterFailure(patch, previous, version);
       this.platform.log.warn(`[${this.device.name}] write failed:`, error instanceof Error ? error.message : error);
       throw new this.platform.api.hap.HapStatusError(
         this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
       );
     }
+  }
+
+  /**
+   * A failed write leaves the true device state ambiguous for the keys it touched — the
+   * transport may have partially applied the patch before failing. Restoring this call's
+   * own pre-write snapshot is only safe for keys nothing newer has touched since (those
+   * are filtered to `ownedKeys` below); for those, prefer an authoritative device read
+   * over a guess, falling back to the snapshot only if that read itself fails (e.g. the
+   * device is offline, which is exactly when a guess is least trustworthy but also the
+   * only option left).
+   */
+  private async reconcileAfterFailure(
+    patch: Partial<FanState>,
+    previous: Partial<FanState>,
+    version: number,
+  ): Promise<void> {
+    const ownedKeys = (Object.keys(patch) as (keyof FanState)[]).filter(key => this.keyVersion[key] === version);
+    if (ownedKeys.length === 0) {
+      return; // every key this write touched has since been superseded by a newer write
+    }
+    let authoritative: Partial<FanState> = {};
+    try {
+      authoritative = toFanState(await this.transport.get() as Record<string, string | number | boolean>, this.dpsOptions);
+    } catch {
+      // Device unreachable too — nothing better than this write's own snapshot.
+    }
+    const reconciled = {} as Partial<FanState>;
+    ownedKeys.forEach(key => {
+      const value = key in authoritative
+        ? (authoritative as Record<keyof FanState, unknown>)[key]
+        : previous[key];
+      (this.state as Record<keyof FanState, unknown>)[key] = value;
+      (reconciled as Record<keyof FanState, unknown>)[key] = value;
+    });
+    this.pushToCharacteristics(reconciled);
   }
 
   private async refresh(): Promise<void> {
@@ -199,7 +252,10 @@ export class CeilingFanAccessory {
     Object.assign(this.state, patch);
     // Debug, not info — eight fans pushing state at info level floods the log.
     this.platform.log.debug(`[${this.device.name}] update:`, JSON.stringify(patch));
+    this.pushToCharacteristics(patch);
+  }
 
+  private pushToCharacteristics(patch: Partial<FanState>): void {
     const { Characteristic } = this.platform;
     if (patch.power !== undefined) {
       this.fan.updateCharacteristic(Characteristic.Active, patch.power ? Characteristic.Active.ACTIVE : Characteristic.Active.INACTIVE);

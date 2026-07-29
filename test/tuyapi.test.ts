@@ -19,9 +19,19 @@ const get = vi.fn().mockImplementation(async (opts?: { dps?: number; schema?: bo
   return { dps: {} };
 });
 const handlers: Record<string, ((...a: unknown[]) => void)[]> = {};
+// Counts how many underlying TuyAPI instances have been constructed — the regression
+// guard for issue #4 (bounded transport recreation after a readback timeout) asserts
+// against this rather than trying to inspect tuyapi's own private per-sequence
+// resolver map, which isn't reachable through this mock (or the real library's public
+// API either — that's the whole reason recreation is the fix).
+const constructorSpy = vi.fn();
+const removeAllListeners = vi.fn();
 
 vi.mock('tuyapi', () => ({
   default: class {
+    constructor() {
+      constructorSpy();
+    }
     connect = connect;
     find = find;
     disconnect = disconnect;
@@ -29,6 +39,7 @@ vi.mock('tuyapi', () => ({
     isConnected = () => false;
     get = get;
     set = set;
+    removeAllListeners = removeAllListeners;
     on(event: string, fn: (...a: unknown[]) => void) {
       (handlers[event] ??= []).push(fn);
       return this;
@@ -66,6 +77,8 @@ beforeEach(() => {
     return { dps: {} };
   });
   Object.values(log).forEach(m => m.mockReset());
+  constructorSpy.mockClear();
+  removeAllListeners.mockClear();
 });
 
 afterEach(() => vi.useRealTimers());
@@ -388,16 +401,160 @@ describe('reconnect supervision', () => {
     d.onDps(dps => received.push(dps));
 
     await d.set({ '3': 5 });
+    // The confirmed write itself is published immediately — see the dedicated
+    // HAP/Matter convergence test below. Not the focus here; clear it out.
+    expect(received).toEqual([{ '3': 5 }]);
+    received.length = 0;
 
-    // Immediately after settling, a stale echo is still suppressed.
-    handlers['data']?.[0]?.({ dps: { '3': 4 } });
-    expect(received).toHaveLength(0);
-
-    // Once the settle window has fully elapsed, a genuine subsequent change (e.g.
-    // someone at the wall control nudging the speed) must apply normally.
+    // Once the settle window has fully elapsed with no activity during it, a genuine
+    // subsequent change (e.g. someone at the wall control nudging the speed) applies
+    // normally, with no extra device read.
     await vi.advanceTimersByTimeAsync(1_501);
+    get.mockClear();
     handlers['data']?.[0]?.({ dps: { '3': 4 } });
     expect(received).toEqual([{ '3': 4 }]);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('publishes a confirmed write to every listener immediately, so HAP and Matter converge without waiting on a suppressed echo', async () => {
+    // Two independent consumers (HAP's CeilingFanAccessory and MatterFanBridge) both
+    // subscribe via onDps on the same shared transport. Before this fix, a write's own
+    // confirming readback was never published — it only ever reached listeners as an
+    // echo, and that echo was suppressed by the very write that produced it. So the
+    // consumer that did NOT issue the write never learned the new state at all.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    const hapSeen: Record<string, unknown>[] = [];
+    const matterSeen: Record<string, unknown>[] = [];
+    d.onDps(dps => hapSeen.push(dps));
+    d.onDps(dps => matterSeen.push(dps));
+
+    // Simulates HAP issuing the write; Matter never calls set() itself.
+    await d.set({ '3': 4 });
+
+    expect(hapSeen).toEqual([{ '3': 4 }]);
+    expect(matterSeen).toEqual([{ '3': 4 }]);
+    // fails if reverted: without the immediate broadcast, both arrays stay empty —
+    // the confirming readback is filtered out by echo suppression before either
+    // listener ever sees it.
+  });
+
+  it('reconciles an external change that arrived during the suppression window with an authoritative read, instead of losing it', async () => {
+    // Reproduces: someone flips the wall switch (or the Smart Life app) right after
+    // this process wrote a different datapoint, while that write's echo-suppression
+    // window is still open. Before this fix the echo was dropped outright and, unless
+    // the device happened to send another update later, the change never reached
+    // HomeKit at all.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    const received: Record<string, unknown>[] = [];
+    d.onDps(dps => received.push(dps));
+
+    await d.set({ '3': 5 });
+    received.length = 0; // drop the immediate confirmed-write broadcast; not the focus here
+
+    // A wall-switch change to a DIFFERENT value arrives mid-window — held back, not
+    // delivered yet.
+    handlers['data']?.[0]?.({ dps: { '3': 2 } });
+    expect(received).toHaveLength(0);
+
+    // The device's true current value (as a real authoritative read would report) is
+    // the wall-switch change, not our own written value.
+    get.mockImplementationOnce(async () => 2);
+
+    await vi.advanceTimersByTimeAsync(1_501);
+
+    expect(received).toEqual([{ '3': 2 }]);
+    // fails if reverted: without buffering + a post-window authoritative recheck, the
+    // wall-switch change above is discarded and `received` stays empty forever.
+  });
+
+  it('settles every waiter for a merged write by which of its own datapoints actually landed, not by arrival order', async () => {
+    // Reproduces: a queued speed change is merged behind an in-flight write, then an
+    // unrelated direction change arrives and is merged in too. Before this fix, the
+    // speed-change caller was resolved the instant the direction change merged in —
+    // before ANY of the merged patch had reached the device. If the merged write then
+    // failed, only the newest caller (direction) rejected; the speed caller stayed
+    // falsely "committed" even though its datapoint never landed.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    const first = d.set({ '1': true }); // real write, currently in flight
+    const speedChange = d.set({ '3': 5 }); // queued behind it
+    const directionChange = d.set({ '8': 'reverse' }); // merges in alongside speedChange, doesn't touch dp 3
+
+    // The merged write (dp 3 then dp 8, in that order) fails on its first datapoint.
+    // dp 1 — the separate, already in-flight write — was called synchronously above,
+    // before this override takes effect, so it still succeeds normally.
+    let mergedAttempted = false;
+    set.mockImplementation(async (o: { dps: number; set: unknown }) => {
+      if (!mergedAttempted && o.dps === 3) {
+        mergedAttempted = true;
+        throw new Error('device unreachable');
+      }
+      lastWrittenValue[String(o.dps)] = o.set;
+      return { dps: {} };
+    });
+
+    await expect(first).resolves.toBeUndefined();
+    // Neither datapoint in the merged patch ever reached the device — both callers
+    // that were still attributed to it at the time it ran must reject, not just the
+    // newest one.
+    await expect(speedChange).rejects.toThrow(/unreachable/i);
+    await expect(directionChange).rejects.toThrow(/unreachable/i);
+    // fails if reverted: without per-datapoint waiter settlement, `speedChange` above
+    // resolves successfully the moment `directionChange` merges in, regardless of what
+    // the merged write actually does.
+  });
+
+  it('keeps outstanding transport requests bounded across repeated readback timeouts', async () => {
+    // Installed tuyapi (7.7.1) stores a resolver per outgoing sequence number that is
+    // never cleared on our side's timeout and exposes no cancellation — a half-open
+    // fan (still "connected", but no longer replying) leaves one of these behind per
+    // timed-out write. The fix recreates the whole transport instance after a readback
+    // timeout, discarding that stuck resolver along with it, so repeated automations
+    // across eight devices don't grow this bookkeeping without bound.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    const instancesAtStart = constructorSpy.mock.calls.length;
+    const disconnected = vi.fn();
+    d.onDisconnected(disconnected);
+
+    // Simulates a half-open connection: the readback's get() never settles.
+    get.mockImplementation(() => new Promise(() => {}));
+
+    for (let i = 0; i < 3; i++) {
+      const write = d.set({ '1': true });
+      // Attach the rejection assertion before advancing timers — otherwise the
+      // rejection (which fires mid-advance) briefly has no handler attached yet,
+      // which vitest/Node flags as an unhandled rejection even though it's
+      // immediately awaited below.
+      const assertion = expect(write).rejects.toThrow(/could not be confirmed/i);
+      await vi.advanceTimersByTimeAsync(3_100); // past READBACK_TIMEOUT_MS
+      await assertion;
+      expect(d.connected).toBe(false);
+      fire('connected'); // simulates the automatic reconnect tuyapi performs
+    }
+
+    // One brand-new underlying transport per timeout — never one growing instance
+    // that keeps accumulating stuck resolvers.
+    expect(constructorSpy.mock.calls.length).toBe(instancesAtStart + 3);
+    expect(disconnect).toHaveBeenCalledTimes(3);
+    expect(disconnected).toHaveBeenCalledTimes(3);
+    // fails if reverted: without recreation, constructorSpy stays at instancesAtStart
+    // (the same TuyAPI instance, and its stuck resolvers, is reused across all three
+    // timeouts) and `d.connected` never flips false on a timeout at all.
   });
 
   it('onDps returns a disposer that detaches the listener', async () => {

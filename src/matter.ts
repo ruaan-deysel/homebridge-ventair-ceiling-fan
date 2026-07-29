@@ -181,6 +181,11 @@ export class MatterFanBridge {
 
   private readonly dpsOptions = { brightnessScale: DEFAULT_BRIGHTNESS_SCALE };
 
+  /** Which `write()` call last touched each key of `state` — see `CeilingFanAccessory`'s
+   * identical field for why a blind snapshot rollback on failure isn't safe. */
+  private readonly keyVersion: Partial<Record<keyof FanState, number>> = {};
+  private versionCounter = 0;
+
   private readonly callbacks: MatterFanCallbacks = {
     // Both callbacks return write()'s promise (not fire-and-forget with `void`) — see the
     // comment on buildMatterAccessory()'s `handlers` for why that's required for Homebridge
@@ -217,16 +222,21 @@ export class MatterFanBridge {
 
   private async write(patch: Partial<FanState>): Promise<void> {
     const previous = {} as Partial<FanState>;
+    const version = ++this.versionCounter;
     (Object.keys(patch) as (keyof FanState)[]).forEach(key => {
       (previous as Record<keyof FanState, unknown>)[key] = this.state[key];
+      this.keyVersion[key] = version;
     });
     Object.assign(this.state, patch);
     try {
       await this.transport.set(toDps(patch, this.dpsOptions));
     } catch (error) {
-      Object.assign(this.state, previous);
+      // Version-gated: only roll back keys nothing newer has touched since this write
+      // started (see CeilingFanAccessory.reconcileAfterFailure for the full rationale —
+      // an older write's failure must not stomp a newer write's already-applied state).
+      await this.reconcileAfterFailure(patch, previous, version);
       this.log.warn(`[${this.device.name}] Matter write failed:`, error instanceof Error ? error.message : error);
-      // Push the rolled-back state so Matter's local cache doesn't show the optimistic
+      // Push the reconciled state so Matter's local cache doesn't show the optimistic
       // patch that never actually reached the fan, then rethrow: the caller (the handler
       // returned to Homebridge in buildMatterAccessory()) must propagate this so
       // Homebridge's Matter behavior sees the failure and does not commit cluster state
@@ -236,6 +246,30 @@ export class MatterFanBridge {
       throw error;
     }
     await this.pushState();
+  }
+
+  /** See CeilingFanAccessory.reconcileAfterFailure — same version-gated rollback,
+   * preferring an authoritative device read over a guessed snapshot when possible. */
+  private async reconcileAfterFailure(
+    patch: Partial<FanState>,
+    previous: Partial<FanState>,
+    version: number,
+  ): Promise<void> {
+    const ownedKeys = (Object.keys(patch) as (keyof FanState)[]).filter(key => this.keyVersion[key] === version);
+    if (ownedKeys.length === 0) {
+      return;
+    }
+    let authoritative: Partial<FanState> = {};
+    try {
+      authoritative = toFanState(await this.transport.get(), this.dpsOptions);
+    } catch {
+      // Device unreachable too — nothing better than this write's own snapshot.
+    }
+    ownedKeys.forEach(key => {
+      (this.state as Record<keyof FanState, unknown>)[key] = key in authoritative
+        ? (authoritative as Record<keyof FanState, unknown>)[key]
+        : previous[key];
+    });
   }
 
   private async applyUpdate(dps: Record<string, DpValue>): Promise<void> {

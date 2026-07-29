@@ -198,6 +198,50 @@ describe('fan control', () => {
     expect(handlers.get('Sleep.On')?.onGet?.()).toBe(false);
   });
 
+  it('an older write failing after a newer write already succeeded does not roll back the newer state', async () => {
+    // Reproduces: two RotationSpeed commands land close together (e.g. a HomeKit
+    // automation immediately followed by a user drag). The older one is still
+    // in flight on the wire when the newer one starts, applies its own optimistic
+    // state, and succeeds. Only THEN does the older command's write fail. Before
+    // version-gating, its rollback unconditionally restored its own pre-write
+    // snapshot — wiping out the newer command's already-confirmed success even
+    // though the fan genuinely holds the newer value.
+    const { platform, accessory, device, handlers } = harness();
+    const transport = new FakeTuyaDevice();
+    await transport.connect();
+    new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
+
+    let rejectOlder!: (error: unknown) => void;
+    const olderSetPromise = new Promise<void>((_, reject) => {
+      rejectOlder = reject;
+    });
+    // Only the very next transport.set() call (the older write's) hangs — the newer
+    // write's call falls through to FakeTuyaDevice's normal, immediately-resolving
+    // behaviour.
+    vi.spyOn(transport, 'set').mockImplementationOnce(() => olderSetPromise);
+
+    const older = handlers.get('Fanv2.RotationSpeed')?.onSet?.(20); // step 1, stuck in flight
+    await handlers.get('Fanv2.RotationSpeed')?.onSet?.(60); // step 3, completes first
+
+    expect(handlers.get('Fanv2.RotationSpeed')?.onGet?.()).toBe(60);
+    expect(transport.state[DP.speed]).toBe(3);
+
+    // Now the older, superseded write finally fails.
+    rejectOlder(new Error('device unreachable'));
+    await expect(older).rejects.toThrow();
+
+    // The newer, successful value must survive — nothing rolled it back.
+    expect(handlers.get('Fanv2.RotationSpeed')?.onGet?.()).toBe(60);
+    expect(transport.state[DP.speed]).toBe(3);
+    expect(platform.log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('write failed'),
+      'device unreachable',
+    );
+    // fails if reverted: an unconditional `Object.assign(this.state, previous)` in
+    // write()'s catch restores speedStep to 0/power to false here, and the assertions
+    // above fail.
+  });
+
   it('removes every Sleep switch when exposeModeSwitches is off, not just the subtyped one', async () => {
     const { platform, accessory, device } = harness({ exposeModeSwitches: false });
     accessory.addService('Switch', 'Sleep');

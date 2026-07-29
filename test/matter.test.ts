@@ -219,6 +219,40 @@ describe('MatterFanBridge', () => {
     expect(log.debug).toHaveBeenCalledWith(expect.stringContaining('onOff'), 'onOff failed');
   });
 
+  it('an older write failing after a newer write already succeeded does not roll back the newer state', async () => {
+    // Same race as CeilingFanAccessory's equivalent test: an older command is still
+    // in flight when a newer one starts, applies its own optimistic state, and
+    // succeeds — only then does the older command's write fail. Version-gating must
+    // stop that failure from restoring the older write's own pre-write snapshot over
+    // the newer, already-successful state.
+    const { matterApi, transport, bridge } = harness();
+    await transport.connect();
+
+    let rejectOlder!: (error: unknown) => void;
+    const olderSetPromise = new Promise<void>((_, reject) => {
+      rejectOlder = reject;
+    });
+    vi.spyOn(transport, 'set').mockImplementationOnce(() => olderSetPromise);
+
+    const acc = bridge.buildAccessory();
+    const older = acc.handlers!.fanControl!.percentSettingChange!({ percentSetting: 20, oldPercentSetting: 0 } as never, undefined); // step 1, stuck in flight
+    await acc.handlers!.fanControl!.percentSettingChange!({ percentSetting: 60, oldPercentSetting: 20 } as never, undefined); // step 3, completes first
+
+    expect(bridge.buildAccessory().clusters!.fanControl!.percentCurrent).toBe(60);
+
+    rejectOlder(new Error('device unreachable'));
+    await expect(older).rejects.toThrow('device unreachable');
+
+    // The newer, successful value must survive the older write's failure.
+    expect(bridge.buildAccessory().clusters!.fanControl!.percentCurrent).toBe(60);
+    const lastFanControlPush = matterApi.updateAccessoryState.mock.calls
+      .filter(([, cluster]) => cluster === 'fanControl')
+      .at(-1);
+    expect(lastFanControlPush?.[2]).toMatchObject({ percentCurrent: 60 });
+    // fails if reverted: an unconditional snapshot restore in write()'s catch pushes
+    // percentCurrent back to 20 (or the pre-write 0) here instead of keeping 60.
+  });
+
   it('propagates a disconnected-transport write failure through the real Homebridge registry.executeHandler path', async () => {
     // Exercises the actual mechanism Homebridge's Matter behaviors rely on, not a mock
     // that resolves regardless: registry.executeHandler() is exactly what
