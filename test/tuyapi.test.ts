@@ -246,6 +246,17 @@ describe('reconnect supervision', () => {
     expect(logged).toContain('…00000a');
   });
 
+  it('tells two fans apart even when their id suffixes collide', async () => {
+    // Real ids from one production batch differ only in their last characters, so a bare
+    // suffix is not a safe identifier. The configured fan name is, and it keeps the id
+    // out of the log entirely rather than merely shortening it.
+    const a = new TuyapiDevice({ ...opts, id: 'bf1111111111111100000a', label: 'Family Room Fan' }, log);
+    const b = new TuyapiDevice({ ...opts, id: 'bf2222222222222200000a', label: 'Office 1 Fan' }, log);
+
+    await expect(a.set({ '1': true })).rejects.toThrow(/Family Room Fan/);
+    await expect(b.set({ '1': true })).rejects.toThrow(/Office 1 Fan/);
+  });
+
   it('rejects the whole patch when the device disconnects between two datapoints', async () => {
     // The connectivity guard used to run once, before the loop — a disconnect that
     // happened *between* two sequential datapoint writes (now genuinely possible:

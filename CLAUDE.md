@@ -91,5 +91,11 @@ across all of them.
 
 - No credentials, local keys, real IPs, real device IDs or passwords in any file, test,
   comment or commit message. Fixtures use `192.0.2.x` and synthetic IDs like `bf0…000a`.
+- This extends to the log: `TuyapiDevice` identifies itself by the configured fan name
+  (`TuyapiOptions.label`), never by the device id — a short id suffix is only a fallback,
+  and it is not guaranteed unique across one production batch.
+  **Caveat this plugin cannot close:** running Homebridge with `DEBUG=TuyAPI` makes the
+  tuyapi dependency print its own GET/SET payloads and the discovery id, full id included.
+  That output bypasses everything here, so ask for a redacted log when debugging with it.
 - Commit messages carry no tool attribution or `Co-Authored-By` trailers.
 - New behaviour gets a test that demonstrably fails without the change.

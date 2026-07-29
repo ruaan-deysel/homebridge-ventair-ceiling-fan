@@ -8,6 +8,8 @@ export interface TuyapiOptions {
   key: string;
   version: string;
   ip?: string;
+  /** Human label for log messages. Falls back to a short id suffix when absent. */
+  label?: string;
 }
 
 const BASE_DELAY_MS = 1_000;
@@ -169,12 +171,16 @@ export class TuyapiDevice implements TuyaDevice {
 
   /**
    * How this device names itself in anything a human might read. The full id identifies
-   * real hardware and users paste logs into public issues, so messages carry only a short
-   * suffix — still unique enough to tell eight fans apart. The whole id goes to the Tuya
-   * transport (`createDevice`) and nowhere else.
+   * real hardware and users paste logs into public issues, so it never appears here; the
+   * whole id goes to the Tuya transport (`createDevice`) and nowhere else.
+   *
+   * Prefers the configured fan name, which is unambiguous. The id suffix is only a
+   * fallback, and it is NOT guaranteed unique: real ids from one production batch differ
+   * only in their last characters (…a54652 and …a54654 are two fans in one deployment),
+   * so two fans can in principle share a suffix. The name avoids that entirely.
    */
   private get tag(): string {
-    return `…${this.opts.id.slice(-6)}`;
+    return this.opts.label ?? `…${this.opts.id.slice(-6)}`;
   }
 
   private createDevice(): TuyAPI {
