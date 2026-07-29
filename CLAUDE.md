@@ -5,45 +5,77 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-npm run build    # rimraf dist && tsc
-npm run lint     # eslint src/**/*.ts --max-warnings=0
-npm run watch    # build + npm link + nodemon (runs `homebridge -I -D` on src change)
+npm run build      # rimraf dist && tsc
+npm run lint       # eslint . --max-warnings=0, then npm run typecheck
+npm run typecheck  # tsc -p tsconfig.test.json (no emit; covers src, test and vitest.config.ts)
+npm test           # vitest run
+npm run watch      # build + npm link + nodemon (runs `homebridge -I -D` on src change)
 ```
 
-No test suite exists. `prepublishOnly` runs lint + build.
+`prepublishOnly` runs lint + test + build. The test suite does **not** need a prior build:
+`vitest.config.ts` aliases `../dist/*.js` to `src/*.ts` for `homebridge-ui/server.js`, whose
+runtime imports must keep pointing at `dist/` because that is all the published package ships.
 
 ## Architecture
 
-Homebridge *dynamic platform* plugin bridging a Tuya-protocol Ventair Skyfan DC ceiling fan into HomeKit. Four files, ~380 lines:
+Homebridge *dynamic platform* plugin bridging Tuya-protocol Ventair Skyfan DC ceiling fans
+into HomeKit.
 
 - `src/index.ts` — registers the platform with Homebridge.
 - `src/settings.ts` — `PLATFORM_NAME` (must match `pluginAlias` in `config.schema.json`) and `PLUGIN_NAME` (must match `name` in `package.json`).
+- `src/config.ts` — Zod schema for the platform config. A bad device entry costs that one fan, never the bridge, and **never** unregisters an accessory (that would irreversibly discard its rooms, scenes and automations).
 - `src/platform.ts` — reads `config.devices[]`, generates a HAP UUID from the Tuya device id, and constructs one `CeilingFanAccessory` per device (restoring cached accessories where present).
-- `src/platformAccessory.ts` — everything else: one `TuyAPI` connection per accessory, HomeKit characteristic handlers, and the inbound state sync.
+- `src/dps.ts` — the datapoint ↔ `FanState` translation, both directions. The only place DP numbers appear.
+- `src/accessory.ts` — HomeKit services and characteristic handlers, optimistic state with per-key versioning, and rollback that restores only device-confirmed values.
+- `src/tuya/tuyapi.ts` — the transport: one `TuyAPI` connection per accessory, the reconnect supervisor, and the write/readback path. **Do not touch `verifyWrite`, `awaitEcho`, `writeOnce`, the echo-suppression window or the reconnect supervisor** without live-hardware verification; that code was tuned against real fans.
+- `src/tuya/discovery.ts` — UDP broadcast discovery (ports 6666/6667, published AES-ECB key).
+- `src/tuya/cloud.ts` — Tuya Cloud API client used only to fetch local keys, including the IPv4-preferring agent + alternate-family retry for tuya/tuya-homebridge#412.
+- `homebridge-ui/` — the custom Homebridge UI: `server.js` (plain ESM JS, `/discover` and `/keys`) and `public/index.html` (one self-contained page, no build step).
 
 ### Tuya DPS mapping
 
-The device speaks Tuya "data points". This mapping is the core domain knowledge and is duplicated between the `onSet` handlers and the inbound `updateHook`:
-
-| DPS | Meaning | Values |
-|-----|---------|--------|
+| DP | Meaning | Values |
+|----|---------|--------|
 | 1 | fan power | boolean |
-| 2 | fan mode | `'nature'` \| `'smart'` \| `'sleep'` |
+| 2 | fan mode | `'Normal'` \| `'Sleep'` (capitalised on the wire) |
 | 3 | fan speed | 1–5 |
 | 8 | rotation direction | `'forward'` \| `'reverse'` |
-| 15 | light power | boolean |
-| 16 | light brightness | 0–100 |
+| 15 | light power | boolean (untested — no unit here has a light) |
+| 16 | light brightness | device scale, mapped to 0–100 |
+| 22 | countdown | present on the hardware, deliberately unimplemented |
 
-Speed is exposed to HomeKit as 0–100% with `minStep: 20`, so percent ↔ step conversion (`×20` / `÷20`) appears in three places — change them together.
+Confirmed by write probe on live hardware: the fan accepts **only** Normal and Sleep over
+the LAN. The cloud spec's `nature`/`smart` are resolved by index and come back as Sleep, so
+unrecognised mode strings are preserved rather than mapped. `exposeModeSwitches` therefore
+adds a single Sleep switch — there is no third mode and no `SwingMode` mapping any more.
 
-HomeKit has no third fan mode, so `SwingMode` carries mode: `SWING_ENABLED` → `nature`, `SWING_DISABLED` → `smart`, and inbound `sleep` also collapses to `SWING_DISABLED` (lossy round-trip; a `sleep` device state reads back as `smart`).
+Speed is exposed as 0–100% with `minStep: 20`; conversion lives in `stepToPercent` /
+`percentToStep` in `src/dps.ts` and nowhere else.
 
 ### Connection lifecycle
 
-`connect()` does `find()` then `connect()`, then `fetchInitialState()`. On failure it retries every 60s. `disconnected` and `error` events both call `connect()` again — the reconnect loop is the accessory's only resilience mechanism, and there is no backoff or cancellation, so avoid adding paths that can call `connect()` concurrently.
+`TuyapiDevice.connect()` is supervised: exponential backoff with jitter, capped at 60s,
+with a single in-flight attempt (`inFlight`) so `error` and `disconnected` arriving together
+cannot start two loops. A readback timeout recreates the whole underlying `TuyAPI` instance
+— tuyapi 7.7.1 keeps a per-sequence resolver it never clears, and there is no cancellation
+API — and the discarded instance is both `disconnect()`ed and `removeAllListeners()`ed.
 
-All `device.set()` calls use `shouldWaitForResponse: false` — writes are fire-and-forget and local `this.state` is updated optimistically. Real state arrives asynchronously via the `data` / `dp-refresh` events, both routed through `updateHook`.
+`set()` runs with `shouldWaitForResponse: false`, so it can never reject; a write is
+confirmed by the fan echoing the value back, or by a bounded readback poll. Echoes for a
+datapoint with a write in flight are buffered, not dropped, and reconciled against an
+authoritative read once the settle window closes — that is how a wall switch or the Smart
+Life app still reaches HomeKit.
 
 ## Config
 
-`config.schema.json` drives the Homebridge UI form. Adding a per-device option means touching the schema, the `DeviceConfig` interface in `platform.ts` (which is currently narrower than the schema — `ip` and `version` are read off `accessory.context.device` untyped), and the accessory.
+`config.schema.json` drives the standard Homebridge form; `homebridge-ui/public/index.html`
+drives the custom one. Adding a per-device option means touching the schema, the Zod schema
+in `src/config.ts`, the custom UI, and the accessory — and keeping the wording consistent
+across all of them.
+
+## Conventions
+
+- No credentials, local keys, real IPs, real device IDs or passwords in any file, test,
+  comment or commit message. Fixtures use `192.0.2.x` and synthetic IDs like `bf0…000a`.
+- Commit messages carry no tool attribution or `Co-Authored-By` trailers.
+- New behaviour gets a test that demonstrably fails without the change.

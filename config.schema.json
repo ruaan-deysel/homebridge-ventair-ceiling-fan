@@ -50,7 +50,7 @@
               "type": "boolean",
               "title": "Expose mode switches",
               "default": false,
-              "description": "Adds Nature, Sleep and Smart switches to this fan in the Home app."
+              "description": "Adds a Sleep switch to this fan in the Home app. The hardware only accepts Normal and Sleep over the LAN, so there is nothing else to expose."
             },
             "ip": {
               "type": "string",
