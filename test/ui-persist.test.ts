@@ -24,6 +24,11 @@ function extractFunction(source: string, signature: string): string {
       if (depth === 0) { break; }
     }
   }
+  // Running off the end leaves depth > 0, which used to yield a silently truncated
+  // function body — the eval below would then fail in some baffling unrelated way.
+  if (depth !== 0) {
+    throw new Error(`Unbalanced braces while extracting "${signature}"`);
+  }
   return source.slice(start, i + 1);
 }
 
@@ -32,17 +37,61 @@ const html = readFileSync(path.join(__dirname, '../homebridge-ui/public/index.ht
 const persistSrc = extractFunction(html, 'async function persist(message)');
 const setBusySrc = extractFunction(html, 'function setBusy(value)');
 
-function loadPersist(homebridge: unknown) {
+function loadUi(homebridge: unknown, document: unknown = { querySelectorAll: () => [] }) {
   const factory = new Function(
     'homebridge',
     'document',
     'platform',
-    `${setBusySrc}\n${persistSrc}\nreturn persist;`,
+    `${setBusySrc}\n${persistSrc}\nreturn { persist, setBusy };`,
   );
-  const document = { querySelectorAll: () => [] };
   const platform = { platform: 'HomebridgeVentairCeilingFan', name: 'Test', devices: [] };
-  return factory(homebridge, document, platform);
+  return factory(homebridge, document, platform) as {
+    persist: (message?: string) => Promise<boolean>;
+    setBusy: (value: boolean) => void;
+  };
 }
+
+function loadPersist(homebridge: unknown) {
+  return loadUi(homebridge).persist;
+}
+
+describe('homebridge-ui setBusy()', () => {
+  function loadSetBusy() {
+    const button = { disabled: false };
+    const { setBusy } = loadUi({}, { querySelectorAll: () => [button] });
+    return { setBusy, button };
+  }
+
+  it('keeps controls disabled until the LAST overlapping operation finishes', () => {
+    // As a boolean flag, the first operation to finish re-enabled every button while the
+    // second was still running — so a scan finishing mid-cloud-fetch handed the user live
+    // buttons for an operation still in flight.
+    const { setBusy, button } = loadSetBusy();
+
+    setBusy(true);
+    setBusy(true);
+    expect(button.disabled).toBe(true);
+
+    setBusy(false);
+    expect(button.disabled).toBe(true);
+
+    setBusy(false);
+    expect(button.disabled).toBe(false);
+  });
+
+  it('never drops below zero, so a stray release cannot leave everything permanently disabled', () => {
+    const { setBusy, button } = loadSetBusy();
+
+    setBusy(false);
+    setBusy(false);
+    expect(button.disabled).toBe(false);
+
+    setBusy(true);
+    expect(button.disabled).toBe(true);
+    setBusy(false);
+    expect(button.disabled).toBe(false);
+  });
+});
 
 describe('homebridge-ui persist()', () => {
   it('surfaces an error toast, reports failure to the caller, and does not show success when saving rejects', async () => {

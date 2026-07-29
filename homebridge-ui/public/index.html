@@ -58,8 +58,11 @@
     These credentials are used for the request only and are <strong>never saved</strong>
     to your Homebridge config.
   </p>
+  <label class="form-label small mb-1" for="clientId">Access ID</label>
   <input class="form-control mb-2" id="clientId" placeholder="Access ID">
+  <label class="form-label small mb-1" for="secret">Access Secret</label>
   <input class="form-control mb-2" id="secret" type="password" placeholder="Access Secret">
+  <label class="form-label small mb-1" for="region">Data centre</label>
   <select class="form-control mb-2" id="region">
     <option value="eu">Europe</option>
     <option value="us">Americas</option>
@@ -84,6 +87,10 @@
     // Fans the user has clicked "Replace" on. UI-only — never mutates device.key, so an
     // unrelated persist() can't write a blank key and take the fan offline.
     const replacing = new Set();
+    // Half-typed local keys, by device id. A failed save re-renders the row, which builds
+    // a brand-new input — without this the user's key vanishes and they have to go and
+    // find it again. Cleared only once the key is actually saved.
+    const draftKeys = new Map();
 
     // ---- helpers -------------------------------------------------------------
     function el(tag, attrs = {}, children = []) {
@@ -133,9 +140,14 @@
       }
     }
 
+    // A reference count, not a flag. With two overlapping operations (a scan and a cloud
+    // fetch, say) the first one to finish used to re-enable every button while the second
+    // was still running. The count is parked on the function object so it stays inside the
+    // source range test/ui-persist.test.ts extracts and evals.
     function setBusy(value) {
-      busy = value;
-      document.querySelectorAll('button').forEach(b => { b.disabled = value; });
+      setBusy.depth = Math.max(0, (setBusy.depth || 0) + (value ? 1 : -1));
+      busy = setBusy.depth > 0;
+      document.querySelectorAll('button').forEach(b => { b.disabled = busy; });
     }
 
     // ---- rendering (DOM nodes + textContent only — device data is untrusted LAN input) --
@@ -195,7 +207,14 @@
       });
       ipInput.value = device.ip || '';
 
-      const keyInput = el('input', { class: 'form-control form-control-sm', type: 'password', placeholder: 'Paste local key', 'aria-label': `Local key for ${device.name}` });
+      const keyInput = el('input', {
+        class: 'form-control form-control-sm',
+        type: 'password',
+        placeholder: 'Paste local key',
+        'aria-label': `Local key for ${device.name}`,
+        oninput: e => draftKeys.set(device.id, e.target.value),
+      });
+      keyInput.value = draftKeys.get(device.id) || '';
       const saveKeyBtn = el('button', {
         class: 'btn btn-sm btn-primary',
         onclick: async () => {
@@ -206,8 +225,11 @@
           }
           const previous = device.key;
           device.key = value;
-          keyInput.value = '';
           if (await persist(`Key saved for ${device.name}`)) {
+            // Only now — clearing before the save meant a failed save silently threw away
+            // what the user had typed, and they had to go and find the key again.
+            keyInput.value = '';
+            draftKeys.delete(device.id);
             replacing.delete(device.id);
           } else {
             device.key = previous; // save failed — keep the working key
@@ -272,7 +294,7 @@
         el('div', { class: 'fan-meta' }, [
           keySection,
           toggle(device, 'hasLight', 'Light'),
-          toggle(device, 'exposeModeSwitches', 'Sleep switch'),
+          toggle(device, 'exposeModeSwitches', 'Expose mode switches'),
         ]),
         el('details', { class: 'fan-adv' }, [
           el('summary', {}, 'Advanced'),
@@ -381,7 +403,11 @@
       try {
         // A failure fetching one fan's key must not discard the keys that DID come
         // back — same skip-bad-device policy as the rest of this UI/plugin.
-        const { devices, failed } = await homebridge.request('/keys', { clientId, secret, region, ids });
+        const response = await homebridge.request('/keys', { clientId, secret, region, ids });
+        // Both fields are treated as untrusted: a malformed response used to throw inside
+        // `devices.map(...)` and kill the handler with no message shown to the user.
+        const devices = Array.isArray(response?.devices) ? response.devices : [];
+        const failed = Array.isArray(response?.failed) ? response.failed : [];
         const byId = new Map(devices.map(d => [d.id, d]));
         let updated = 0;
         for (const device of platform.devices) {
