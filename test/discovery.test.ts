@@ -71,4 +71,21 @@ describe('discover', () => {
     expect(failingSocket.close).toHaveBeenCalled();
     expect(result).toEqual([decoded]);
   });
+
+  it('swallows a close() failure from the socket error handler instead of throwing out of it', async () => {
+    // An asynchronous bind error arrives as an 'error' event on a socket that was never
+    // bound, so close() throws ERR_SOCKET_DGRAM_NOT_RUNNING. Thrown from inside an event
+    // handler that is nobody's promise, that terminates the Homebridge process — every
+    // other close() in this file is already guarded.
+    const erroring = new FakeSocket(() => {});
+    erroring.close = vi.fn(() => {
+      throw new Error('ERR_SOCKET_DGRAM_NOT_RUNNING');
+    });
+    const other = new FakeSocket(() => {});
+    createSocketMock.mockReturnValueOnce(erroring).mockReturnValueOnce(other);
+
+    const scan = discover(10);
+    expect(() => erroring.emit('error', new Error('bind EACCES'))).not.toThrow();
+    await expect(scan).resolves.toEqual([]);
+  });
 });

@@ -75,6 +75,8 @@ export class TuyapiDevice implements TuyaDevice {
    * what actually reaches the device, rather than against the merge itself.
    */
   private pendingWrite: { dps: Record<string, DpValue>; waiters: Waiter[] } | null = null;
+  /** Waiters for the write currently on the wire — see `disconnect()`. */
+  private activeWaiters: Waiter[] = [];
 
   /**
    * Per-datapoint deadline (ms, `Date.now()` scale) until which inbound echoes are
@@ -306,6 +308,16 @@ export class TuyapiDevice implements TuyaDevice {
     this.pendingSettleTimers.forEach(t => clearTimeout(t));
     this.pendingSettleTimers.clear();
     this.connectedState = false;
+    // Settle everything still waiting on a write, or those callers stay pending for the
+    // life of the process — a HomeKit request that never returns either way. A promise
+    // only settles once, so a waiter the normal completion path already resolved is
+    // unaffected by this.
+    const abandoned = [...this.activeWaiters, ...(this.pendingWrite?.waiters ?? [])];
+    this.activeWaiters = [];
+    this.pendingWrite = null;
+    for (const waiter of abandoned) {
+      waiter.reject(new Error(`[${this.opts.id}] write abandoned: device disconnected`));
+    }
     this.device.disconnect();
   }
 
@@ -410,9 +422,15 @@ export class TuyapiDevice implements TuyaDevice {
   }
 
   private runWrite(dps: Record<string, DpValue>, waiters: Waiter[]): void {
+    // Tracked so `disconnect()` can settle the write that is actually on the wire, not
+    // just the one queued behind it.
+    this.activeWaiters = waiters;
     this.writeOnce(dps)
       .then(({ confirmed, error }) => this.settleWaiters(waiters, confirmed, error))
       .finally(() => {
+        if (this.activeWaiters === waiters) {
+          this.activeWaiters = [];
+        }
         const next = this.pendingWrite;
         this.pendingWrite = null;
         if (next) {

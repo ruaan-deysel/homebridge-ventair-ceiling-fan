@@ -65,8 +65,17 @@ export function discover(timeoutMs = 10_000): Promise<DiscoveredDevice[]> {
 
     for (const port of UDP_PORTS) {
       const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-      // A port already in use must not take down the other listener.
-      socket.on('error', () => socket.close());
+      // A port already in use must not take down the other listener. Guarded like every
+      // other close() here: an asynchronous bind error fires this on a socket that was
+      // never bound, and close() then throws from inside an event handler — a path no
+      // caller can catch, which takes the whole Homebridge process down.
+      socket.on('error', () => {
+        try {
+          socket.close();
+        } catch {
+          // never bound, or already closed
+        }
+      });
       socket.on('message', msg => {
         const device = decodeBroadcast(msg);
         if (device) {

@@ -241,6 +241,27 @@ describe('reconnect supervision', () => {
     expect(set).toHaveBeenCalledTimes(1);
   });
 
+  it('settles every pending write when disconnect() is called, instead of leaving callers hung forever', async () => {
+    // disconnect() cancelled its timers but never touched the in-flight write's waiters
+    // or the queued patch's, so anything awaiting set() at shutdown stayed pending for
+    // the life of the process — a HomeKit request that never returns either way.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    set.mockImplementationOnce(() => new Promise(() => {})); // never settles: write stuck on the wire
+    const inFlight = d.set({ '1': true });
+    await vi.advanceTimersByTimeAsync(0);
+    const queued = d.set({ '3': 5 });
+    await vi.advanceTimersByTimeAsync(0);
+
+    d.disconnect();
+
+    await expect(inFlight).rejects.toThrow(/disconnect/i);
+    await expect(queued).rejects.toThrow(/disconnect/i);
+  });
+
   it('rejects a write when the confirming readback cannot be completed', async () => {
     // set() with shouldWaitForResponse: false always resolves regardless of whether
     // the datapoint actually reached the device. Without a readback, a send failure
