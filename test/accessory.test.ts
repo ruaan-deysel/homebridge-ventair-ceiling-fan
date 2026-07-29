@@ -185,6 +185,10 @@ describe('fan control', () => {
     await transport.connect();
     vi.spyOn(transport, 'set').mockRejectedValue(new Error('device unreachable'));
     new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
+    // The device reports its own state first. Rollback restores that confirmed value —
+    // never the failed write's optimistic snapshot, which under overlapping writes can
+    // hold a value the fan never received.
+    transport.emitDps({ [DP.mode]: 'Normal' });
 
     // Sleep.On's onSet chains write().then(syncModeSwitch); write() now rejects on a
     // failed transport write instead of swallowing the error, so HomeKit reverts the
@@ -240,6 +244,39 @@ describe('fan control', () => {
     // fails if reverted: an unconditional `Object.assign(this.state, previous)` in
     // write()'s catch restores speedStep to 0/power to false here, and the assertions
     // above fail.
+  });
+
+  it('does not restore a superseded write value the fan never received when reconciliation cannot read the device', async () => {
+    // Three overlapping speed commands; the last one fails. Its own pre-write snapshot
+    // holds the SECOND command's optimistic value — a value that was never sent to the
+    // fan, because that command is still stuck in flight. With the authoritative read
+    // unavailable too, the only trustworthy fallback is the last value the device itself
+    // reported, not the accessory's own guess.
+    const { platform, accessory, device, handlers } = harness();
+    const transport = new FakeTuyaDevice();
+    await transport.connect();
+    new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
+
+    // The fan tells us what it is actually doing: full speed.
+    transport.emitDps({ [DP.power]: true, [DP.speed]: 5 });
+    expect(handlers.get('Fanv2.RotationSpeed')?.onGet?.()).toBe(100);
+
+    // The device goes unreachable: the two earlier writes hang on the wire, the third
+    // rejects, and the reconciling read cannot get through either.
+    vi.spyOn(transport, 'get').mockRejectedValue(new Error('device unreachable'));
+    vi.spyOn(transport, 'set')
+      .mockImplementationOnce(() => new Promise<void>(() => {})) // step 1 — stuck in flight
+      .mockImplementationOnce(() => new Promise<void>(() => {})) // step 2 — stuck in flight
+      .mockRejectedValueOnce(new Error('device unreachable')); // step 3 — fails
+
+    void handlers.get('Fanv2.RotationSpeed')?.onSet?.(20);
+    void handlers.get('Fanv2.RotationSpeed')?.onSet?.(40);
+    await expect(handlers.get('Fanv2.RotationSpeed')?.onSet?.(60)).rejects.toThrow();
+
+    // 40% is the superseded middle command's optimistic value — the fan never saw it.
+    expect(handlers.get('Fanv2.RotationSpeed')?.onGet?.()).toBe(100);
+    // fails if reverted: the `previous[key]` fallback restores 40 here, publishing a
+    // speed the hardware never held.
   });
 
   it('removes every Sleep switch when exposeModeSwitches is off, not just the subtyped one', async () => {

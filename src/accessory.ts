@@ -29,6 +29,15 @@ export class CeilingFanAccessory {
   private readonly keyVersion: Partial<Record<keyof FanState, number>> = {};
   private versionCounter = 0;
 
+  /**
+   * Last value the DEVICE was actually observed to hold for each key — fed only from
+   * inbound updates (`applyUpdate`, i.e. the transport's onDps and the initial refresh),
+   * never from an optimistic write. That distinction is the whole point: a failed write's
+   * own pre-write snapshot can contain a value from an earlier write that never reached
+   * the fan, so restoring it publishes a state the hardware never held.
+   */
+  private readonly lastConfirmed: Partial<FanState> = {};
+
   constructor(
     private readonly platform: HomebridgeVentairCeilingFan,
     private readonly accessory: PlatformAccessory,
@@ -183,17 +192,15 @@ export class CeilingFanAccessory {
    * write is going to succeed. See `reconcileAfterFailure` for the version-gated rollback.
    */
   private async write(patch: Partial<FanState>): Promise<void> {
-    const previous = {} as Partial<FanState>;
     const version = ++this.versionCounter;
     (Object.keys(patch) as (keyof FanState)[]).forEach(key => {
-      (previous as Record<keyof FanState, unknown>)[key] = this.state[key];
       this.keyVersion[key] = version;
     });
     Object.assign(this.state, patch);
     try {
       await this.transport.set(toDps(patch, this.dpsOptions));
     } catch (error) {
-      await this.reconcileAfterFailure(patch, previous, version);
+      await this.reconcileAfterFailure(patch, version);
       this.platform.log.warn(`[${this.device.name}] write failed:`, error instanceof Error ? error.message : error);
       throw new this.platform.api.hap.HapStatusError(
         this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
@@ -203,18 +210,16 @@ export class CeilingFanAccessory {
 
   /**
    * A failed write leaves the true device state ambiguous for the keys it touched — the
-   * transport may have partially applied the patch before failing. Restoring this call's
-   * own pre-write snapshot is only safe for keys nothing newer has touched since (those
-   * are filtered to `ownedKeys` below); for those, prefer an authoritative device read
-   * over a guess, falling back to the snapshot only if that read itself fails (e.g. the
-   * device is offline, which is exactly when a guess is least trustworthy but also the
-   * only option left).
+   * transport may have partially applied the patch before failing. Reconciling a key is
+   * only safe while nothing newer has touched it, and ownership can change at ANY await,
+   * including the authoritative read below — so it is rechecked immediately before every
+   * assignment, not just once up front. Order of preference per key: the authoritative
+   * device read, then the last value the device was actually seen to hold
+   * (`lastConfirmed`), then nothing at all. Never this write's own optimistic snapshot:
+   * under overlapping writes that snapshot can hold a superseded value the fan never
+   * received, and publishing it invents a state that never existed.
    */
-  private async reconcileAfterFailure(
-    patch: Partial<FanState>,
-    previous: Partial<FanState>,
-    version: number,
-  ): Promise<void> {
+  private async reconcileAfterFailure(patch: Partial<FanState>, version: number): Promise<void> {
     const ownedKeys = (Object.keys(patch) as (keyof FanState)[]).filter(key => this.keyVersion[key] === version);
     if (ownedKeys.length === 0) {
       return; // every key this write touched has since been superseded by a newer write
@@ -223,17 +228,24 @@ export class CeilingFanAccessory {
     try {
       authoritative = toFanState(await this.transport.get() as Record<string, string | number | boolean>, this.dpsOptions);
     } catch {
-      // Device unreachable too — nothing better than this write's own snapshot.
+      // Device unreachable too — fall back to the last confirmed device value.
     }
     const reconciled = {} as Partial<FanState>;
     ownedKeys.forEach(key => {
-      const value = key in authoritative
-        ? (authoritative as Record<keyof FanState, unknown>)[key]
-        : previous[key];
+      if (this.keyVersion[key] !== version) {
+        return; // a newer write claimed this key while the read above was in flight
+      }
+      const source = key in authoritative ? authoritative : this.lastConfirmed;
+      if (!(key in source)) {
+        return; // nothing the device ever confirmed — leave HomeKit showing what it has
+      }
+      const value = (source as Record<keyof FanState, unknown>)[key];
       (this.state as Record<keyof FanState, unknown>)[key] = value;
       (reconciled as Record<keyof FanState, unknown>)[key] = value;
     });
-    this.pushToCharacteristics(reconciled);
+    if (Object.keys(reconciled).length > 0) {
+      this.pushToCharacteristics(reconciled);
+    }
   }
 
   private async refresh(): Promise<void> {
@@ -250,6 +262,9 @@ export class CeilingFanAccessory {
       return;
     }
     Object.assign(this.state, patch);
+    // Inbound only: this is the device telling us what it holds, which is exactly what
+    // a failed write's reconciliation may need to fall back on.
+    Object.assign(this.lastConfirmed, patch);
     // Debug, not info — eight fans pushing state at info level floods the log.
     this.platform.log.debug(`[${this.device.name}] update:`, JSON.stringify(patch));
     this.pushToCharacteristics(patch);

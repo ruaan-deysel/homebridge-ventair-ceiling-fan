@@ -186,6 +186,11 @@ export class MatterFanBridge {
   private readonly keyVersion: Partial<Record<keyof FanState, number>> = {};
   private versionCounter = 0;
 
+  /** Last value the DEVICE was actually observed to hold per key, fed only from inbound
+   * updates — see `CeilingFanAccessory`'s identical field. Both surfaces must reconcile
+   * a failed write the same way or HAP, Matter and the fan settle on three values. */
+  private readonly lastConfirmed: Partial<FanState> = {};
+
   private readonly callbacks: MatterFanCallbacks = {
     // Both callbacks return write()'s promise (not fire-and-forget with `void`) — see the
     // comment on buildMatterAccessory()'s `handlers` for why that's required for Homebridge
@@ -221,10 +226,8 @@ export class MatterFanBridge {
   }
 
   private async write(patch: Partial<FanState>): Promise<void> {
-    const previous = {} as Partial<FanState>;
     const version = ++this.versionCounter;
     (Object.keys(patch) as (keyof FanState)[]).forEach(key => {
-      (previous as Record<keyof FanState, unknown>)[key] = this.state[key];
       this.keyVersion[key] = version;
     });
     Object.assign(this.state, patch);
@@ -234,7 +237,7 @@ export class MatterFanBridge {
       // Version-gated: only roll back keys nothing newer has touched since this write
       // started (see CeilingFanAccessory.reconcileAfterFailure for the full rationale —
       // an older write's failure must not stomp a newer write's already-applied state).
-      await this.reconcileAfterFailure(patch, previous, version);
+      await this.reconcileAfterFailure(patch, version);
       this.log.warn(`[${this.device.name}] Matter write failed:`, error instanceof Error ? error.message : error);
       // Push the reconciled state so Matter's local cache doesn't show the optimistic
       // patch that never actually reached the fan, then rethrow: the caller (the handler
@@ -249,12 +252,10 @@ export class MatterFanBridge {
   }
 
   /** See CeilingFanAccessory.reconcileAfterFailure — same version-gated rollback,
-   * preferring an authoritative device read over a guessed snapshot when possible. */
-  private async reconcileAfterFailure(
-    patch: Partial<FanState>,
-    previous: Partial<FanState>,
-    version: number,
-  ): Promise<void> {
+   * rechecked before every assignment (ownership can change across the read), preferring
+   * an authoritative device read, then the last confirmed device value, and leaving a key
+   * alone entirely rather than restoring an optimistic snapshot the fan never received. */
+  private async reconcileAfterFailure(patch: Partial<FanState>, version: number): Promise<void> {
     const ownedKeys = (Object.keys(patch) as (keyof FanState)[]).filter(key => this.keyVersion[key] === version);
     if (ownedKeys.length === 0) {
       return;
@@ -263,12 +264,17 @@ export class MatterFanBridge {
     try {
       authoritative = toFanState(await this.transport.get(), this.dpsOptions);
     } catch {
-      // Device unreachable too — nothing better than this write's own snapshot.
+      // Device unreachable too — fall back to the last confirmed device value.
     }
     ownedKeys.forEach(key => {
-      (this.state as Record<keyof FanState, unknown>)[key] = key in authoritative
-        ? (authoritative as Record<keyof FanState, unknown>)[key]
-        : previous[key];
+      if (this.keyVersion[key] !== version) {
+        return; // a newer write claimed this key while the read above was in flight
+      }
+      const source = key in authoritative ? authoritative : this.lastConfirmed;
+      if (!(key in source)) {
+        return; // nothing the device ever confirmed — leave the key as it stands
+      }
+      (this.state as Record<keyof FanState, unknown>)[key] = (source as Record<keyof FanState, unknown>)[key];
     });
   }
 
@@ -278,6 +284,8 @@ export class MatterFanBridge {
       return;
     }
     Object.assign(this.state, patch);
+    // Inbound only — the device's own report, the fallback a failed write can trust.
+    Object.assign(this.lastConfirmed, patch);
     await this.pushState();
   }
 

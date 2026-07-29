@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { DP } from '../src/dps.js';
 import { buildMatterAccessory, matterUuid, MatterFanBridge } from '../src/matter.js';
 import { FakeTuyaDevice } from '../src/tuya/device.js';
 // A relative file-path import bypasses `homebridge`'s package.json `exports` restriction
@@ -186,6 +187,11 @@ describe('MatterFanBridge', () => {
   it('rolls back optimistic state on a failed write before pushing to Matter', async () => {
     const { matterApi, log, transport, bridge } = harness();
     await transport.connect();
+    // The device reports its own state first. Rollback restores that confirmed value —
+    // never the failed write's optimistic snapshot, which under overlapping writes can
+    // hold a value the fan never received.
+    transport.emitDps({ [DP.power]: false });
+    matterApi.updateAccessoryState.mockClear();
     vi.spyOn(transport, 'set').mockRejectedValue(new Error('device unreachable'));
 
     const acc = bridge.buildAccessory();
@@ -251,6 +257,32 @@ describe('MatterFanBridge', () => {
     expect(lastFanControlPush?.[2]).toMatchObject({ percentCurrent: 60 });
     // fails if reverted: an unconditional snapshot restore in write()'s catch pushes
     // percentCurrent back to 20 (or the pre-write 0) here instead of keeping 60.
+  });
+
+  it('does not restore a superseded write value the fan never received when reconciliation cannot read the device', async () => {
+    // Mirror of the HAP-side test in accessory.test.ts — both surfaces must reconcile a
+    // failed write identically, or HAP, Matter and the fan settle on three values.
+    const { transport, bridge } = harness();
+    await transport.connect();
+    transport.emitDps({ [DP.power]: true, [DP.speed]: 5 });
+    expect(bridge.buildAccessory().clusters!.fanControl!.percentCurrent).toBe(100);
+
+    vi.spyOn(transport, 'get').mockRejectedValue(new Error('device unreachable'));
+    vi.spyOn(transport, 'set')
+      .mockImplementationOnce(() => new Promise<void>(() => {})) // step 1 — stuck in flight
+      .mockImplementationOnce(() => new Promise<void>(() => {})) // step 2 — stuck in flight
+      .mockRejectedValueOnce(new Error('device unreachable')); // step 3 — fails
+
+    const acc = bridge.buildAccessory();
+    void acc.handlers!.fanControl!.percentSettingChange!({ percentSetting: 20, oldPercentSetting: 100 } as never, undefined);
+    void acc.handlers!.fanControl!.percentSettingChange!({ percentSetting: 40, oldPercentSetting: 20 } as never, undefined);
+    await expect(
+      acc.handlers!.fanControl!.percentSettingChange!({ percentSetting: 60, oldPercentSetting: 40 } as never, undefined),
+    ).rejects.toThrow('device unreachable');
+
+    // 40% is the superseded middle command's optimistic value — the fan never saw it.
+    expect(bridge.buildAccessory().clusters!.fanControl!.percentCurrent).toBe(100);
+    // fails if reverted: the `previous[key]` fallback restores 40 here.
   });
 
   it('propagates a disconnected-transport write failure through the real Homebridge registry.executeHandler path', async () => {
