@@ -222,6 +222,18 @@ describe('reconnect supervision', () => {
     expect(set).not.toHaveBeenCalled();
   });
 
+  it('never puts the full Tuya device id into a message that reaches the log', async () => {
+    // The device id identifies real hardware and used to be interpolated whole into
+    // every warn/error message, so a user pasting a log into an issue published it.
+    // A short suffix is enough to tell eight fans apart.
+    const realId = 'bf0000000000000000000a';
+    const d = new TuyapiDevice({ ...opts, id: realId }, log);
+    await expect(d.set({ '1': true })).rejects.toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining(realId) }),
+    );
+    await expect(d.set({ '1': true })).rejects.toThrow(/00000a/);
+  });
+
   it('rejects the whole patch when the device disconnects between two datapoints', async () => {
     // The connectivity guard used to run once, before the loop — a disconnect that
     // happened *between* two sequential datapoint writes (now genuinely possible:
