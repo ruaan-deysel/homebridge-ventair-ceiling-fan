@@ -81,6 +81,9 @@
     let lastScanIds = null;
     let platform = { platform: 'HomebridgeVentairCeilingFan', name: 'Skyfan DC Ceiling Fan', devices: [] };
     let busy = false;
+    // Fans the user has clicked "Replace" on. UI-only — never mutates device.key, so an
+    // unrelated persist() can't write a blank key and take the fan offline.
+    const replacing = new Set();
 
     // ---- helpers -------------------------------------------------------------
     function el(tag, attrs = {}, children = []) {
@@ -201,9 +204,14 @@
             homebridge.toast.error('Local keys are exactly 16 characters', device.name);
             return;
           }
+          const previous = device.key;
           device.key = value;
           keyInput.value = '';
-          await persist(`Key saved for ${device.name}`);
+          if (await persist(`Key saved for ${device.name}`)) {
+            replacing.delete(device.id);
+          } else {
+            device.key = previous; // save failed — keep the working key
+          }
           renderAll();
         },
       }, 'Save');
@@ -227,17 +235,28 @@
       // A fan whose key is already stored is finished — it gets a quiet confirmation and
       // a text link, not an input and two filled buttons. Only a fan still MISSING its
       // key shows the entry affordances, which is where attention actually belongs.
-      const keySection = device.key
+      //
+      // "Replace" must NOT clear device.key. It previously did, which meant any later
+      // persist() — triggered by an unrelated toggle — wrote the blank key to disk and
+      // took the fan offline without the user ever submitting a replacement. Replacement
+      // is UI-only state; the stored key is overwritten solely by a successful save.
+      const keySection = device.key && !replacing.has(device.id)
         ? el('div', { class: 'fan-key' }, [
           el('span', { class: 'small text-success' }, '✓ Key set'),
           el('button', {
             class: 'btn btn-sm btn-link link-secondary p-0',
-            onclick: () => { device.key = ''; renderAll(); },
+            onclick: () => { replacing.add(device.id); renderAll(); },
           }, 'Replace'),
         ])
         : el('div', { class: 'fan-key' }, [
-          el('span', { class: 'small text-warning-emphasis' }, 'Key needed'),
+          el('span', { class: 'small text-warning-emphasis' }, replacing.has(device.id) ? 'New key' : 'Key needed'),
           keyInput, saveKeyBtn, fetchKeyBtn,
+          replacing.has(device.id)
+            ? el('button', {
+              class: 'btn btn-sm btn-link link-secondary p-0',
+              onclick: () => { replacing.delete(device.id); renderAll(); },
+            }, 'Cancel')
+            : null,
         ]);
 
       const idPill = el('span', { class: 'fan-id', title: device.id }, `…${device.id.slice(-6)}`);
