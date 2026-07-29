@@ -1,7 +1,56 @@
 import process from 'node:process';
 import { HomebridgePluginUiServer, RequestError } from '@homebridge/plugin-ui-utils';
 import { discover } from '../dist/tuya/discovery.js';
-import { TuyaCloud } from '../dist/tuya/cloud.js';
+import { TUYA_REGIONS, TuyaCloud } from '../dist/tuya/cloud.js';
+
+/**
+ * Validates the `/keys` request payload's shape BEFORE a `TuyaCloud` instance is ever
+ * constructed (which starts signing/authenticating requests) — a malformed request must
+ * never reach the network layer at all. Pulled out of the handler for the same reason as
+ * `fetchKeys` above: testable without booting the IPC-bound `HomebridgePluginUiServer`.
+ * Throws `RequestError`; returns nothing on success.
+ */
+export function validateKeysRequest(body) {
+  if (typeof body !== 'object' || body === null) {
+    throw new RequestError('request body must be an object');
+  }
+  const { clientId, secret, ids, region } = body;
+  if (typeof clientId !== 'string' || !clientId) {
+    throw new RequestError('clientId must be a non-empty string');
+  }
+  if (typeof secret !== 'string' || !secret) {
+    throw new RequestError('secret must be a non-empty string');
+  }
+  if (!Array.isArray(ids) || ids.length === 0 || !ids.every(id => typeof id === 'string')) {
+    throw new RequestError('ids must be a non-empty array of strings');
+  }
+  // The region picks the Tuya data centre the credentials are signed against, so it must
+  // be one of the four the UI offers — never whatever string the client happened to send.
+  // Absent means "unspecified" and defaults to 'eu' below; anything else is rejected
+  // outright rather than silently falling back, because the wrong data centre surfaces as
+  // a baffling "check your credentials" error.
+  if (region !== undefined && !Object.hasOwn(TUYA_REGIONS, region)) {
+    throw new RequestError(`region must be one of: ${Object.keys(TUYA_REGIONS).join(', ')}`);
+  }
+}
+
+/**
+ * The `/keys` handler body, extracted so it is reachable from tests (see `fetchKeys`) and
+ * so validation runs on the RAW request payload. Destructuring in the handler's parameter
+ * list used to throw a raw TypeError on a null/non-object body — before `validateKeysRequest`
+ * could run — which is exactly the case the validator exists for.
+ */
+export async function handleKeysRequest(body) {
+  validateKeysRequest(body);
+  let cloud;
+  try {
+    cloud = new TuyaCloud(body.clientId, body.secret, body.region ?? 'eu');
+    await cloud.authenticate();
+  } catch (error) {
+    throw new RequestError('Could not fetch keys', { message: error.message });
+  }
+  return fetchKeys(cloud, body.ids);
+}
 
 /**
  * Pulled out of the `/keys` handler so it can be unit tested without booting the
@@ -14,29 +63,6 @@ import { TuyaCloud } from '../dist/tuya/cloud.js';
  * TuyaCloud's own thrown message (Tuya's body.msg / a network-class description) —
  * never the raw error object — so the Access ID/Secret can never leak into it.
  */
-/**
- * Validates the `/keys` request payload's shape BEFORE a `TuyaCloud` instance is ever
- * constructed (which starts signing/authenticating requests) — a malformed request must
- * never reach the network layer at all. Pulled out of the handler for the same reason as
- * `fetchKeys` above: testable without booting the IPC-bound `HomebridgePluginUiServer`.
- * Throws `RequestError`; returns nothing on success.
- */
-export function validateKeysRequest(body) {
-  if (typeof body !== 'object' || body === null) {
-    throw new RequestError('request body must be an object');
-  }
-  const { clientId, secret, ids } = body;
-  if (typeof clientId !== 'string' || !clientId) {
-    throw new RequestError('clientId must be a non-empty string');
-  }
-  if (typeof secret !== 'string' || !secret) {
-    throw new RequestError('secret must be a non-empty string');
-  }
-  if (!Array.isArray(ids) || ids.length === 0 || !ids.every(id => typeof id === 'string')) {
-    throw new RequestError('ids must be a non-empty array of strings');
-  }
-}
-
 export async function fetchKeys(cloud, ids) {
   const results = await Promise.allSettled(ids.map(id => cloud.getDevice(id)));
   const devices = [];
@@ -69,17 +95,7 @@ class VentairUiServer extends HomebridgePluginUiServer {
     });
 
     // Credentials arrive per-request and are never stored anywhere.
-    this.onRequest('/keys', async ({ clientId, secret, region, ids }) => {
-      validateKeysRequest({ clientId, secret, ids });
-      let cloud;
-      try {
-        cloud = new TuyaCloud(clientId, secret, region ?? 'eu');
-        await cloud.authenticate();
-      } catch (error) {
-        throw new RequestError('Could not fetch keys', { message: error.message });
-      }
-      return fetchKeys(cloud, ids);
-    });
+    this.onRequest('/keys', body => handleKeysRequest(body));
 
     this.ready();
   }

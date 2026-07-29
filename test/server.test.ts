@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { RequestError } from '@homebridge/plugin-ui-utils';
-import { fetchKeys, validateKeysRequest } from '../homebridge-ui/server.js';
+import { fetchKeys, handleKeysRequest, validateKeysRequest } from '../homebridge-ui/server.js';
 
 function fakeCloud(byId: Record<string, unknown>) {
   return {
@@ -73,5 +73,33 @@ describe('/keys validateKeysRequest()', () => {
     expect(() => validateKeysRequest({ clientId: 'id', secret: 'sec', ids: [] })).toThrow(/ids/);
     expect(() => validateKeysRequest({ clientId: 'id', secret: 'sec', ids: 'a' })).toThrow(/ids/);
     expect(() => validateKeysRequest({ clientId: 'id', secret: 'sec', ids: ['a', 123] })).toThrow(/ids/);
+  });
+
+  it('rejects a region outside the set the UI offers, but allows it to be absent', () => {
+    // The region selects the Tuya data centre the credentials get signed against —
+    // an arbitrary client-supplied string must never reach TuyaCloud.
+    const base = { clientId: 'id', secret: 'sec', ids: ['a'] };
+    expect(() => validateKeysRequest({ ...base, region: 'ru' })).toThrow(/region/);
+    expect(() => validateKeysRequest({ ...base, region: '' })).toThrow(/region/);
+    expect(() => validateKeysRequest({ ...base, region: 'constructor' })).toThrow(/region/);
+    expect(() => validateKeysRequest({ ...base, region: 42 })).toThrow(/region/);
+    expect(() => validateKeysRequest({ ...base, region: undefined })).not.toThrow();
+    for (const region of ['eu', 'us', 'cn', 'in']) {
+      expect(() => validateKeysRequest({ ...base, region })).not.toThrow();
+    }
+  });
+});
+
+describe('/keys handler', () => {
+  // The handler used to destructure its payload in the parameter list, so a null or
+  // non-object body threw a raw TypeError before validateKeysRequest — the validator
+  // that exists precisely for that case — ever ran.
+  it.each([null, undefined, 'not an object', 42])('rejects %p with a RequestError, not a TypeError', async body => {
+    await expect(handleKeysRequest(body)).rejects.toBeInstanceOf(RequestError);
+  });
+
+  it('rejects a bad region before any TuyaCloud instance is constructed', async () => {
+    const body = { clientId: 'id', secret: 'sec', ids: ['a'], region: 'nowhere' };
+    await expect(handleKeysRequest(body)).rejects.toThrow(/region/);
   });
 });

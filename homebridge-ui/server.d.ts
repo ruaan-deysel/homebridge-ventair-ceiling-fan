@@ -6,6 +6,8 @@
  */
 export function validateKeysRequest(body: unknown): void;
 
+export function handleKeysRequest(body: unknown): Promise<unknown>;
+
 export function fetchKeys<T>(
   cloud: { getDevice(id: string): Promise<T> },
   ids: string[],
