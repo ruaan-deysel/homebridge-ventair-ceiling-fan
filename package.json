@@ -51,7 +51,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^24",
+    "@types/node": "^26",
     "eslint": "^10.3.0",
     "globals": "^17.8.0",
     "homebridge": "^2.0.0",
