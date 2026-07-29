@@ -37,17 +37,31 @@ into HomeKit.
 | DP | Meaning | Values |
 |----|---------|--------|
 | 1 | fan power | boolean |
-| 2 | fan mode | `'Normal'` \| `'Sleep'` (capitalised on the wire) |
+| 2 | fan mode | `Normal` \| `Sleep` \| `Eco` — written capitalised, read back lowercase; the set is open (see below) |
 | 3 | fan speed | 1–5 |
 | 8 | rotation direction | `'forward'` \| `'reverse'` |
 | 15 | light power | boolean (untested — no unit here has a light) |
 | 16 | light brightness | device scale, mapped to 0–100 |
 | 22 | countdown | present on the hardware, deliberately unimplemented |
 
-Confirmed by write probe on live hardware: the fan accepts **only** Normal and Sleep over
-the LAN. The cloud spec's `nature`/`smart` are resolved by index and come back as Sleep, so
-unrecognised mode strings are preserved rather than mapped. `exposeModeSwitches` therefore
-adds a single Sleep switch — there is no third mode and no `SwingMode` mapping any more.
+Mode is **not** a two-value enum. An earlier write probe found that writing `nature`/`smart`
+over the LAN lands on Sleep, and this file used to conclude from that "there is no third
+mode". That conclusion was wrong: on 2026-07-29 a fan driven from the Smart Life app
+reported mode `eco` on DP 2, cycling eco → sleep → eco → normal. So at least three
+modes exist — the earlier probe showed only that those two *particular* strings are not
+writable over the LAN, not that the mode set is closed.
+
+(Case is not part of that: `toDeviceMode` capitalises on the way out and `toFanState`
+lowercases on the way in, so the same mode is `Eco` in a write and `eco` in state.)
+
+Whether `Eco` can be **written** over the LAN is still unknown: each fan accepts only one
+LAN session at a time, so a probe cannot run while the plugin holds the connection.
+
+This is exactly why `toFanState` lowercases and keeps whatever string arrives instead of
+mapping onto a known enum — `eco` passed through cleanly with no crash and no wrong state.
+Keep that behaviour. `exposeModeSwitches` still adds only a Sleep switch, so a fan in eco
+shows the switch off, and toggling it writes Normal — HomeKit cannot currently show or
+restore eco.
 
 Speed is exposed as 0–100% with `minStep: 20`; conversion lives in `stepToPercent` /
 `percentToStep` in `src/dps.ts` and nowhere else.
@@ -77,5 +91,13 @@ across all of them.
 
 - No credentials, local keys, real IPs, real device IDs or passwords in any file, test,
   comment or commit message. Fixtures use `192.0.2.x` and synthetic IDs like `bf0…000a`.
+- This extends to the log: `TuyapiDevice` identifies itself by the configured fan name
+  (`TuyapiOptions.label`), never by the device id — a short id suffix is only a fallback,
+  and it is not guaranteed unique across one production batch.
+  **Caveat this plugin cannot close:** running Homebridge with `DEBUG=TuyAPI` makes the
+  tuyapi dependency print its own GET/SET payloads, the discovery id and device IPs — and,
+  on protocol 3.4/3.5, the local/remote randoms and the negotiated **session key**. That
+  output bypasses everything here, and session material matters more than the id, so treat
+  a `DEBUG=TuyAPI` log as secret rather than redacting only the ids out of it.
 - Commit messages carry no tool attribution or `Co-Authored-By` trailers.
 - New behaviour gets a test that demonstrably fails without the change.

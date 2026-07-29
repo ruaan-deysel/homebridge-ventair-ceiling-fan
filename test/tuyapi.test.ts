@@ -222,6 +222,55 @@ describe('reconnect supervision', () => {
     expect(set).not.toHaveBeenCalled();
   });
 
+  it('never puts the full Tuya device id into a message that reaches the log', async () => {
+    // The device id identifies real hardware and used to be interpolated whole into
+    // every warn/error message, so a user pasting a log into an issue published it.
+    // A short suffix is enough to tell eight fans apart.
+    //
+    // Asserting on the ELLIPSIS-prefixed tag, not on the bare suffix: the full id ends
+    // with that suffix too, so `/00000a/` alone passes with or without the redaction.
+    const realId = 'bf0000000000000000000a';
+    const d = new TuyapiDevice({ ...opts, id: realId }, log);
+
+    await expect(d.set({ '1': true })).rejects.toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining(realId) }),
+    );
+    await expect(d.set({ '1': true })).rejects.toThrow(/\[…00000a\]/);
+
+    // ...and the same for what actually reaches the Homebridge log, which is the path a
+    // user would paste into an issue. A failing connect is the cheapest logging site.
+    connect.mockRejectedValueOnce(new Error('nope'));
+    await d.connect();
+    const logged = logMocks.warn.mock.calls.flat().map(String).join(' ');
+    expect(logged).not.toContain(realId);
+    expect(logged).toContain('…00000a');
+  });
+
+  it('tells two fans apart even when their id suffixes collide', async () => {
+    // Real ids from one production batch differ only in their last characters, so a bare
+    // suffix is not a safe identifier. The configured fan name is, and it keeps the id
+    // out of the log entirely rather than merely shortening it.
+    const a = new TuyapiDevice({ ...opts, id: 'bf1111111111111100000a', label: 'Family Room Fan' }, log);
+    const b = new TuyapiDevice({ ...opts, id: 'bf2222222222222200000a', label: 'Office 1 Fan' }, log);
+
+    await expect(a.set({ '1': true })).rejects.toThrow(/Family Room Fan/);
+    await expect(b.set({ '1': true })).rejects.toThrow(/Office 1 Fan/);
+  });
+
+  it('neutralises format tokens and newlines in an operator-supplied fan name', async () => {
+    // The name lands in the format-string position of the log call, so a raw `%s` would
+    // swallow the following argument and a newline would forge an extra log line.
+    const d = new TuyapiDevice({ ...opts, label: 'Fan %s\nERROR forged' }, log);
+    // `%s` must arrive ESCAPED as `%%s` (which util.format renders as a literal "%s"),
+    // and the newline must be gone so the name cannot fabricate a second line.
+    await expect(d.set({ '1': true })).rejects.toThrow(
+      expect.objectContaining({ message: expect.stringContaining('Fan %%s ERROR forged') }),
+    );
+    await expect(d.set({ '1': true })).rejects.toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining('\n') }),
+    );
+  });
+
   it('rejects the whole patch when the device disconnects between two datapoints', async () => {
     // The connectivity guard used to run once, before the loop — a disconnect that
     // happened *between* two sequential datapoint writes (now genuinely possible:

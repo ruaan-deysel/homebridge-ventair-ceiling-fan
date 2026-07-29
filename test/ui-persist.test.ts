@@ -149,3 +149,65 @@ describe('homebridge-ui persist()', () => {
     expect(homebridge.getPluginConfig).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('homebridge-ui badgeFor()', () => {
+  const badgeForSrc = extractFunction(html, 'function badgeFor(device)');
+
+  /** `badgeFor` builds a node via `el()`; a stub is enough to read back class + text. */
+  function loadBadgeFor(lastScanIds: Set<string> | null) {
+    const el = (_tag: string, attrs: Record<string, string>, text: string) => ({ ...attrs, text });
+    const factory = new Function('el', 'lastScanIds', `${badgeForSrc}\nreturn badgeFor;`);
+    return factory(el, lastScanIds) as (d: { id: string }) => { class: string; text: string };
+  }
+
+  it('shows "Configured" before any scan has run', () => {
+    expect(loadBadgeFor(null)({ id: 'bf0000000000000000000a' }).text).toBe('Configured');
+  });
+
+  it('warns only when a scan that DID see other fans missed this one', () => {
+    const badge = loadBadgeFor(new Set(['bf0000000000000000000b']));
+    expect(badge({ id: 'bf0000000000000000000a' }).text).toBe('Not found on network');
+  });
+
+  it('keeps an earlier scan\'s warning when a later scan finds nothing', async () => {
+    // Regression, driven through the SHIPPED scan(): a zero-result scan used to overwrite
+    // the last scan with an empty set, so a fan legitimately reported missing by a scan
+    // that DID see other fans silently turned green on the next empty scan.
+    const scanSrc = extractFunction(html, 'async function scan()');
+    const status = { textContent: '' };
+    const homebridge = {
+      request: vi.fn()
+        .mockResolvedValueOnce([{ id: 'bf0000000000000000000b', ip: '192.0.2.11', version: '3.3' }])
+        .mockResolvedValueOnce([]),
+      showSpinner: () => {}, hideSpinner: () => {},
+      toast: { success: () => {}, error: () => {} },
+    };
+    const factory = new Function('homebridge', 'document', 'setBusy', 'renderAll', 'discovered', `
+      let busy = false; let lastScanIds = null;
+      ${scanSrc}
+      return { scan, ids: () => lastScanIds, status: () => document.getElementById('scan-status').textContent };
+    `);
+    const ui = factory(homebridge, { getElementById: () => status }, () => {}, () => {}, new Map()) as {
+      scan: () => Promise<void>; ids: () => Set<string> | null; status: () => string;
+    };
+
+    await ui.scan();                                  // scan A: saw another fan, missed ours
+    const afterA = ui.ids();
+    expect(afterA?.has('bf0000000000000000000b')).toBe(true);
+
+    await ui.scan();                                  // scan B: nothing on the network
+    expect(ui.ids()).toBe(afterA);                    // scan B recorded nothing at all
+    expect(ui.status()).toMatch(/left unchanged/);
+    // ...so our fan still carries scan A's genuine warning.
+    expect(loadBadgeFor(ui.ids())({ id: 'bf0000000000000000000a' }).text).toBe('Not found on network');
+  });
+
+  it('does not warn when the scan found nothing at all', () => {
+    // A scan that heard zero broadcasts is evidence the scan could not hear — not
+    // evidence that every configured fan is offline. Observed on real hardware: eight
+    // fans, all reachable and controllable over TCP, every one relabelled "Not found on
+    // network" because UDP announcements never reached the host.
+    const badge = loadBadgeFor(new Set());
+    expect(badge({ id: 'bf0000000000000000000a' }).text).toBe('Configured');
+  });
+});

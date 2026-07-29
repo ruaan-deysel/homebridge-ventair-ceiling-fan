@@ -50,7 +50,7 @@
               "type": "boolean",
               "title": "Expose mode switches",
               "default": false,
-              "description": "Adds a Sleep switch to this fan in the Home app. The hardware only accepts Normal and Sleep over the LAN, so there is nothing else to expose."
+              "description": "Adds a Sleep switch to this fan in the Home app. Only Normal and Sleep are known to be writable over the LAN, so no other mode is exposed. Fans can report other modes (an Eco mode has been seen) when changed from the Tuya app; those are read correctly but cannot be set from HomeKit."
             },
             "ip": {
               "type": "string",

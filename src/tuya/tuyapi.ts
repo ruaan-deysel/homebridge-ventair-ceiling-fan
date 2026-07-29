@@ -8,6 +8,8 @@ export interface TuyapiOptions {
   key: string;
   version: string;
   ip?: string;
+  /** Human label for log messages. Falls back to a short id suffix when absent. */
+  label?: string;
 }
 
 const BASE_DELAY_MS = 1_000;
@@ -157,7 +159,7 @@ export class TuyapiDevice implements TuyaDevice {
       try {
         listener(dps);
       } catch (error) {
-        this.log.debug(`[${this.opts.id}] dps listener threw:`, error instanceof Error ? error.message : error);
+        this.log.debug(`[${this.tag}] dps listener threw:`, error instanceof Error ? error.message : error);
       }
     }
   }
@@ -165,6 +167,36 @@ export class TuyapiDevice implements TuyaDevice {
   constructor(private readonly opts: TuyapiOptions, private readonly log: Logging) {
     this.device = this.createDevice();
     this.wireDevice();
+  }
+
+  /**
+   * How this device names itself in anything a human might read. The full id identifies
+   * real hardware and users paste logs into public issues, so it never appears here; the
+   * whole id goes to the Tuya transport (`createDevice`) and nowhere else.
+   *
+   * Prefers the configured fan name. The id suffix is only a fallback, and it is NOT
+   * guaranteed unique: real ids from one production batch differ only in their last
+   * characters (…a54652 and …a54654 are two fans in one deployment), so two fans can in
+   * principle share a suffix. A name avoids that — though nothing stops an operator
+   * naming two fans the same, in which case their lines are as ambiguous as the names.
+   */
+  private get tag(): string {
+    const label = this.opts.label?.trim();
+    if (!label) {
+      return `\u2026${this.opts.id.slice(-6)}`;
+    }
+    // The name is operator-supplied free text and lands in the FORMAT-STRING position of
+    // log.debug('[' + tag + '] ...', error). Left raw, a `%s` in it would swallow the
+    // following argument -- the error itself would vanish from the line -- and a newline
+    // would forge what reads as a separate log entry. Neither is likely; both are free to
+    // prevent. Length is bounded so one absurd name cannot dominate every line.
+    return label
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+      .replace(/%/g, '%%')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 40);
   }
 
   private createDevice(): TuyAPI {
@@ -194,7 +226,7 @@ export class TuyapiDevice implements TuyaDevice {
     });
 
     this.device.on('error', (error: Error) => {
-      this.log.debug(`[${this.opts.id}] transport error: ${error.message}`);
+      this.log.debug(`[${this.tag}] transport error: ${error.message}`);
       if (this.connectedState) {
         this.connectedState = false;
         this.disconnectedListeners.forEach(l => l());
@@ -270,12 +302,12 @@ export class TuyapiDevice implements TuyaDevice {
         await this.device.find();
       }
       await this.device.connect();
-      this.log.info(`[${this.opts.id}] connected`);
+      this.log.info(`[${this.tag}] connected`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const delay = jitter(this.nextDelayMs);
       this.attempt++;
-      this.log.warn(`[${this.opts.id}] connect failed (${message}); retrying in ${Math.round(delay / 1000)}s`);
+      this.log.warn(`[${this.tag}] connect failed (${message}); retrying in ${Math.round(delay / 1000)}s`);
       this.armRetry(delay);
     }
   }
@@ -284,7 +316,7 @@ export class TuyapiDevice implements TuyaDevice {
     if (this.stopped || this.inFlight || this.retryTimer) {
       return;
     }
-    this.log.debug(`[${this.opts.id}] scheduling reconnect (${reason})`);
+    this.log.debug(`[${this.tag}] scheduling reconnect (${reason})`);
     this.armRetry(jitter(this.nextDelayMs));
   }
 
@@ -316,7 +348,7 @@ export class TuyapiDevice implements TuyaDevice {
     this.activeWaiters = [];
     this.pendingWrite = null;
     for (const waiter of abandoned) {
-      waiter.reject(new Error(`[${this.opts.id}] write abandoned: device disconnected`));
+      waiter.reject(new Error(`[${this.tag}] write abandoned: device disconnected`));
     }
     this.device.disconnect();
   }
@@ -450,7 +482,7 @@ export class TuyapiDevice implements TuyaDevice {
       if (allLanded) {
         w.resolve();
       } else {
-        w.reject(error ?? new Error(`[${this.opts.id}] write failed`));
+        w.reject(error ?? new Error(`[${this.tag}] write failed`));
       }
     }
   }
@@ -494,7 +526,7 @@ export class TuyapiDevice implements TuyaDevice {
     const confirmed = new Set<string>();
     for (const [dp, value] of Object.entries(dps)) {
       if (!this.connectedState) {
-        return { confirmed, error: new Error(`[${this.opts.id}] cannot write: device is disconnected`) };
+        return { confirmed, error: new Error(`[${this.tag}] cannot write: device is disconnected`) };
       }
       // Suppress echoes for this dp for the whole in-flight duration, not just while
       // waiting for the readback — an echo racing in between the send and the
@@ -585,7 +617,7 @@ export class TuyapiDevice implements TuyaDevice {
       this.emit({ [dp]: actual as DpValue });
     } catch (error) {
       this.log.debug(
-        `[${this.opts.id}] authoritative recheck of dp ${dp} after echo suppression failed:`,
+        `[${this.tag}] authoritative recheck of dp ${dp} after echo suppression failed:`,
         error instanceof Error ? error.message : error,
       );
       // ponytail: exactly one retry. The buffered change deserves a second chance (a
@@ -621,7 +653,7 @@ export class TuyapiDevice implements TuyaDevice {
       let actual: unknown;
       for (;;) {
         if (!this.connectedState) {
-          throw new Error(`[${this.opts.id}] write to dp ${dp} could not be confirmed: device disconnected`);
+          throw new Error(`[${this.tag}] write to dp ${dp} could not be confirmed: device disconnected`);
         }
         if (echo.settled()) {
           return;
@@ -630,7 +662,7 @@ export class TuyapiDevice implements TuyaDevice {
           actual = await this.readDp(dp);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          throw new Error(`[${this.opts.id}] write to dp ${dp} could not be confirmed: ${message}`, { cause: error });
+          throw new Error(`[${this.tag}] write to dp ${dp} could not be confirmed: ${message}`, { cause: error });
         }
         // The echo can land while the readback above is in flight, so re-check it here
         // rather than trusting a read that was already stale when it was issued.
@@ -638,7 +670,7 @@ export class TuyapiDevice implements TuyaDevice {
           return;
         }
         if (Date.now() >= deadline) {
-          throw new Error(`[${this.opts.id}] write to dp ${dp} was not applied (device reports ${JSON.stringify(actual)})`);
+          throw new Error(`[${this.tag}] write to dp ${dp} was not applied (device reports ${JSON.stringify(actual)})`);
         }
         await Promise.race([sleep(WRITE_POLL_MS), echo.promise]);
       }

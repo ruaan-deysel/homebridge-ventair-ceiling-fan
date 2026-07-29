@@ -3,6 +3,7 @@ import type { CharacteristicValue, PlatformAccessory, Service } from 'homebridge
 import type { VentairDevice } from './config.js';
 import { DEFAULT_BRIGHTNESS_SCALE, MODE_NORMAL, MODE_SLEEP, type FanState, percentToStep, stepToPercent, toDps, toFanState } from './dps.js';
 import type { HomebridgeVentairCeilingFan } from './platform.js';
+import { PLUGIN_VERSION } from './settings.js';
 import type { TuyaDevice } from './tuya/device.js';
 
 export class CeilingFanAccessory {
@@ -50,7 +51,7 @@ export class CeilingFanAccessory {
       ?.setCharacteristic(Characteristic.Manufacturer, 'Ventair')
       .setCharacteristic(Characteristic.Model, 'Skyfan DC')
       .setCharacteristic(Characteristic.SerialNumber, device.id)
-      .setCharacteristic(Characteristic.FirmwareRevision, '2.0.0');
+      .setCharacteristic(Characteristic.FirmwareRevision, PLUGIN_VERSION);
 
     this.fan = this.accessory.getService(S.Fanv2) ?? this.accessory.addService(S.Fanv2);
     this.fan.setCharacteristic(Characteristic.Name, device.name);
@@ -98,9 +99,17 @@ export class CeilingFanAccessory {
     const cachedSwitches = this.accessory.services.filter(s => s.UUID === this.accessory.getService(S.Switch)?.UUID);
 
     if (device.exposeModeSwitches) {
-      // Hardware has exactly two reachable modes (Normal, Sleep) — one switch covers it.
-      // On writes Sleep, off writes Normal. Do not add Nature/Smart switches: writing
-      // anything other than Normal/Sleep silently lands on Sleep on the real hardware.
+      // One switch, covering Sleep only: on writes Sleep, off writes Normal.
+      //
+      // The hardware does NOT have exactly two modes — a fan driven from the Smart Life
+      // app reported mode "eco" (2026-07-29). What the earlier probe established is
+      // narrower: writing `nature`/`smart` over the LAN silently lands on Sleep, so those
+      // two are not worth exposing. Whether `Eco` is writable over the LAN is untested
+      // (a fan allows one LAN session, so it cannot be probed while this plugin holds it).
+      //
+      // Consequence to keep in mind: a fan sitting in eco shows this switch OFF, and
+      // toggling it off writes Normal, taking the fan out of eco with no way back from
+      // HomeKit. Inbound eco itself is preserved — see `toFanState`.
       const label = 'Sleep';
       this.sleepSwitch = cachedSwitches.find(s => s.subtype === sleepSubtype)
         ?? cachedSwitches[0] // adopt a legacy subtype-less Switch rather than orphaning it

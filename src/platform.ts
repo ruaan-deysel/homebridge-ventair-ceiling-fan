@@ -85,7 +85,7 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
       this.log.warn(`Could not discover an address for "${device.name}"; it will keep retrying.`);
     }
 
-    const transport = new TuyapiDevice({ id: device.id, key: device.key, version, ip }, this.log);
+    const transport = new TuyapiDevice({ id: device.id, key: device.key, version, ip, label: device.name }, this.log);
 
     const existing = this.accessories.get(uuid);
     if (existing) {
