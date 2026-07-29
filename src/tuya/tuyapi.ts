@@ -15,6 +15,19 @@ const MAX_DELAY_MS = 60_000;
 /** Bounded so a write's confirming readback fails fast instead of hanging like refresh(). */
 const READBACK_TIMEOUT_MS = 3_000;
 /**
+ * How long a write's readback keeps re-reading before giving up on the value appearing.
+ *
+ * `set()` is fire-and-forget (`shouldWaitForResponse: false`), so it resolves before the
+ * fan has applied anything. Measured on real hardware: a single immediate readback gets
+ * the datapoint's PREVIOUS value essentially every time — writing speed step 3 to a fan
+ * sitting at 2 reads back 2, and the correct value arrives a few hundred milliseconds
+ * later. Without this window every write on every fan was reported to HomeKit as a
+ * SERVICE_COMMUNICATION_FAILURE even though it had actually landed.
+ */
+const WRITE_APPLY_MS = 2_000;
+/** Gap between a write's readback attempts while waiting for the fan to apply it. */
+const WRITE_POLL_MS = 200;
+/**
  * How long, after a write's readback confirms, inbound echoes for that same datapoint
  * are held back from immediate delivery. The fan echoes its state as it works through
  * queued commands (see the class-level comment on `writeOnce`/`verifyWrite`), so a stale
@@ -418,6 +431,22 @@ export class TuyapiDevice implements TuyaDevice {
    * recycles the transport, because tuyapi 7.7.1 leaves the abandoned request pending
    * inside it with no way to cancel — see `recycleTransport`.
    */
+  /**
+   * Reads ONE datapoint via a full-schema query rather than `get({ dps: n })`.
+   *
+   * Measured on real hardware: the single-datapoint query keeps returning the datapoint's
+   * previous value for seconds after a write, while a full-schema query issued moments
+   * later already reports the new one. Confirming writes against the single-datapoint
+   * query therefore failed almost every write even though the fan had applied it.
+   */
+  private async readDp(dp: string): Promise<unknown> {
+    const result = await this.boundedRead({ schema: true });
+    if (result && typeof result === 'object' && 'dps' in result) {
+      return (result as { dps: Record<string, DpValue> }).dps[dp];
+    }
+    return undefined;
+  }
+
   private async boundedRead(query: { dps?: number; schema?: boolean }): Promise<unknown> {
     try {
       return await withTimeout(this.device.get(query) as Promise<unknown>, READBACK_TIMEOUT_MS);
@@ -513,7 +542,7 @@ export class TuyapiDevice implements TuyaDevice {
     }
     const generation = this.dpGeneration.get(dp);
     try {
-      const actual = await this.boundedRead({ dps: Number(dp) });
+      const actual = await this.readDp(dp);
       if (this.dpGeneration.get(dp) !== generation) {
         // A newer write for this dp started while the read was in flight and now owns
         // the datapoint; this result describes a superseded state. Discard it silently —
@@ -544,18 +573,28 @@ export class TuyapiDevice implements TuyaDevice {
    * treated as having received this datapoint.
    */
   private async verifyWrite(dp: string, expected: DpValue): Promise<void> {
-    if (!this.connectedState) {
-      throw new Error(`[${this.opts.id}] write to dp ${dp} could not be confirmed: device disconnected`);
-    }
+    const deadline = Date.now() + WRITE_APPLY_MS;
     let actual: unknown;
-    try {
-      actual = await this.boundedRead({ dps: Number(dp) });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`[${this.opts.id}] write to dp ${dp} could not be confirmed: ${message}`, { cause: error });
-    }
-    if (actual !== expected) {
-      throw new Error(`[${this.opts.id}] write to dp ${dp} was not applied (device reports ${JSON.stringify(actual)})`);
+    for (;;) {
+      if (!this.connectedState) {
+        throw new Error(`[${this.opts.id}] write to dp ${dp} could not be confirmed: device disconnected`);
+      }
+      try {
+        actual = await this.readDp(dp);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`[${this.opts.id}] write to dp ${dp} could not be confirmed: ${message}`, { cause: error });
+      }
+      if (actual === expected) {
+        return;
+      }
+      // Still the old value: the fan has not applied the write YET, which is the normal
+      // case rather than a failure. Keep looking until the value shows up or the fan has
+      // had long enough that it plainly never will.
+      if (Date.now() >= deadline) {
+        throw new Error(`[${this.opts.id}] write to dp ${dp} was not applied (device reports ${JSON.stringify(actual)})`);
+      }
+      await sleep(WRITE_POLL_MS);
     }
   }
 
@@ -587,6 +626,13 @@ export class TuyapiDevice implements TuyaDevice {
   onDisconnected(l: () => void): void {
     this.disconnectedListeners.push(l);
   }
+}
+
+/** Unref'd so a pending readback poll can never hold the process open. */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => {
+    setTimeout(resolve, ms).unref?.();
+  });
 }
 
 /** Spread retries so eight fans reconnecting after a network blip don't sync up. */

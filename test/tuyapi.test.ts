@@ -16,7 +16,10 @@ const get = vi.fn().mockImplementation(async (opts?: { dps?: number; schema?: bo
   if (opts?.dps !== undefined) {
     return lastWrittenValue[String(opts.dps)];
   }
-  return { dps: {} };
+  // Writes are confirmed with a full-schema read (see `readDp`): real hardware keeps
+  // serving a STALE value from the single-datapoint query for seconds after a write,
+  // while the schema query already reports the new one.
+  return { dps: { ...lastWrittenValue } };
 });
 const handlers: Record<string, ((...a: unknown[]) => void)[]> = {};
 // Counts how many underlying TuyAPI instances have been constructed — the regression
@@ -74,7 +77,7 @@ beforeEach(() => {
     if (opts?.dps !== undefined) {
       return lastWrittenValue[String(opts.dps)];
     }
-    return { dps: {} };
+    return { dps: { ...lastWrittenValue } };
   });
   Object.values(log).forEach(m => m.mockReset());
   constructorSpy.mockClear();
@@ -261,11 +264,37 @@ describe('reconnect supervision', () => {
     await vi.advanceTimersByTimeAsync(0);
     fire('connected');
 
-    // Device still reports the old value even though set() itself resolved —
-    // exactly what a firmware quirk / lost datapoint looks like on the wire.
-    get.mockImplementationOnce(async () => false);
+    // Device KEEPS reporting the old value for the whole apply window, not just for the
+    // first readback — exactly what a firmware quirk / lost datapoint looks like on the
+    // wire, and what distinguishes it from the fan merely being slow to apply the value.
+    get.mockImplementation(async () => false);
 
-    await expect(d.set({ '1': true })).rejects.toThrow(/was not applied/i);
+    const rejects = expect(d.set({ '1': true })).rejects.toThrow(/was not applied/i);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await rejects;
+  });
+
+  it('waits for a slow fan to apply a write instead of failing it on the first stale readback', async () => {
+    // Real hardware, measured on the bridge: set() is fire-and-forget, so the first
+    // readback after writing speed step 3 to a fan sitting at 2 returns 2 — the value
+    // only appears a few hundred ms later. Treating that first stale read as a failure
+    // reported EVERY write to HomeKit as SERVICE_COMMUNICATION_FAILURE despite the fan
+    // having applied it correctly.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    let reads = 0;
+    get.mockImplementation(async () => {
+      reads++;
+      return { dps: { '3': reads <= 2 ? 2 : 3 } }; // stale twice, then the write lands
+    });
+
+    const write = d.set({ '3': 3 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(write).resolves.toBeUndefined();
+    expect(reads).toBeGreaterThan(1);
   });
 
   it('coalesces rapid successive writes: only the last value reaches the transport, and superseded writes drop quietly', async () => {
@@ -466,7 +495,7 @@ describe('reconnect supervision', () => {
 
     // The device's true current value (as a real authoritative read would report) is
     // the wall-switch change, not our own written value.
-    get.mockImplementationOnce(async () => 2);
+    get.mockImplementationOnce(async () => ({ dps: { '3': 2 } }));
 
     await vi.advanceTimersByTimeAsync(1_501);
 
@@ -589,7 +618,7 @@ describe('reconnect supervision', () => {
     // The buffered change is still pending, so once the device is reachable again the
     // retry publishes it rather than dropping it on the floor.
     fire('connected');
-    get.mockImplementation(async () => 2);
+    get.mockImplementation(async () => ({ dps: { '3': 2 } }));
     await vi.advanceTimersByTimeAsync(1_501);
 
     expect(received).toEqual([{ '3': 2 }]);
