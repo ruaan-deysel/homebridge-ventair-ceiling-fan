@@ -3,6 +3,7 @@ import type { CharacteristicValue, PlatformAccessory, Service } from 'homebridge
 import type { VentairDevice } from './config.js';
 import { DEFAULT_BRIGHTNESS_SCALE, MODE_NORMAL, MODE_SLEEP, type FanState, percentToStep, stepToPercent, toDps, toFanState } from './dps.js';
 import type { HomebridgeVentairCeilingFan } from './platform.js';
+import { PLUGIN_VERSION } from './settings.js';
 import type { TuyaDevice } from './tuya/device.js';
 
 export class CeilingFanAccessory {
@@ -50,7 +51,7 @@ export class CeilingFanAccessory {
       ?.setCharacteristic(Characteristic.Manufacturer, 'Ventair')
       .setCharacteristic(Characteristic.Model, 'Skyfan DC')
       .setCharacteristic(Characteristic.SerialNumber, device.id)
-      .setCharacteristic(Characteristic.FirmwareRevision, '2.0.0');
+      .setCharacteristic(Characteristic.FirmwareRevision, PLUGIN_VERSION);
 
     this.fan = this.accessory.getService(S.Fanv2) ?? this.accessory.addService(S.Fanv2);
     this.fan.setCharacteristic(Characteristic.Name, device.name);

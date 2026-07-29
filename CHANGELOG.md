@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   controllable. A scan that finds some fans but misses one still warns about that fan.
 - The scan result now says explicitly when nothing was found and that fan status was left
   unchanged, so a green badge beside "Found 0" cannot be read as "this fan answered".
+- The firmware revision reported to HomeKit is read from `package.json` instead of a
+  hardcoded string, which had been left at 2.0.0.
 
 ### Changed
 
@@ -24,8 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pasting a log into a bug report published it. An id suffix alone would not have been
   safe either: ids from one production batch differ only in their final characters.
 - **Known limitation:** running Homebridge with `DEBUG=TuyAPI` makes the `tuyapi`
-  dependency print its own payloads, including the full device id. That output bypasses
-  this plugin, so redact debug logs before sharing them.
+  dependency print its own payloads — device ids, IPs, and on protocol 3.4/3.5 the
+  negotiated session key. That output bypasses this plugin entirely, so treat a
+  `DEBUG=TuyAPI` log as secret rather than redacting ids out of it.
 
 ### Documentation
 
@@ -46,10 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   second optimistic-state implementation that had to be kept in lockstep with the
   HomeKit one, which was the source of several state-divergence defects.
 - **BREAKING:** `SwingMode` no longer carries the fan mode. Only `Normal` and `Sleep` are
-  reachable on the real hardware — writing anything else, including Tuya's published
-  `nature`/`smart` values, lands on `Sleep` — and there is no manual mode for
-  `TargetFanState` to represent. Neither characteristic is used any more.
+  written by this plugin — Tuya's published `nature`/`smart` values land on `Sleep` — and
+  there is no manual mode for `TargetFanState` to represent. Neither characteristic is
+  used any more.
   **Any automation built on the fan's swing control will need rebuilding.**
+  **Correction (2.0.1):** this entry originally said only `Normal` and `Sleep` are
+  *reachable on the real hardware*. That was wrong — a fan reported a third mode, `eco`.
+  See the 2.0.1 Documentation note above.
 - `dist/` is no longer committed to the repository; it is built on demand.
 
 ### Added

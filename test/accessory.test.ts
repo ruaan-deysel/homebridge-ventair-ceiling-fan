@@ -17,13 +17,15 @@ function harness(overrides: Record<string, unknown> = {}) {
     };
     return chain;
   };
+  /** Every setCharacteristic(type, value) the accessory performed, in order. */
+  const setChars: [string, unknown][] = [];
   // UUID/subtype fields mirror real HAP Service instances closely enough for the
   // accessory's own getService/getServiceById/services-filter reconciliation logic
   // to behave the same way it does against a real Homebridge accessory.
   const service = (name: string, uuid: string, subtype?: string) => ({
     UUID: uuid,
     subtype,
-    setCharacteristic() { return service(name, uuid, subtype); },
+    setCharacteristic(c: string, v: unknown) { setChars.push([c, v]); return service(name, uuid, subtype); },
     getCharacteristic(c: string) { return characteristic(`${name}.${c}`); },
     updateCharacteristic: vi.fn(),
     displayName: name,
@@ -32,7 +34,10 @@ function harness(overrides: Record<string, unknown> = {}) {
   // A live array, like `PlatformAccessory.services` — a second construction against
   // the same accessory (simulating a Homebridge restart restoring from cache) sees
   // whatever services are already attached instead of a fresh empty store.
-  const services: ReturnType<typeof service>[] = [];
+  // Seeded with AccessoryInformation, as a real cached PlatformAccessory always is.
+  // Without it `getService(AccessoryInformation)?.` short-circuited and the whole
+  // manufacturer/model/serial/firmware chain silently never ran in these tests.
+  const services: ReturnType<typeof service>[] = [service('Info', 'Info')];
 
   const platform = {
     log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -70,7 +75,7 @@ function harness(overrides: Record<string, unknown> = {}) {
   };
 
   const device = { id: 'a'.repeat(20), key: 'k'.repeat(16), name: 'Family Room Fan', hasLight: false, exposeModeSwitches: false, version: '3.3' as const, ...overrides };
-  return { platform, accessory, device, handlers };
+  return { platform, accessory, device, handlers, setChars };
 }
 
 describe('fan control', () => {
@@ -110,7 +115,8 @@ describe('fan control', () => {
     new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
 
     // The Sleep switch writes only Normal/Sleep, and the device requires capitalised
-    // strings. (Other modes exist -- a fan reported "eco" -- but none is writable here.)
+    // strings. Other modes exist -- a fan reported "eco" -- but this switch does not
+    // write them; whether they are writable over the LAN is untested.
     await handlers.get('Sleep.On')?.onSet?.(true);
     expect(transport.state[DP.mode]).toBe('Sleep');
 
@@ -290,5 +296,22 @@ describe('fan control', () => {
     new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
 
     expect(accessory.services.filter(s => s.UUID === 'Switch')).toHaveLength(0);
+  });
+});
+
+describe('accessory information', () => {
+  it('reports the package version as the firmware revision', async () => {
+    // It was hardcoded '2.0.0', so every release silently reported a stale version to
+    // HomeKit until someone remembered to edit a second place. Assert against
+    // package.json so a future bump cannot drift again.
+    const { createRequire } = await import('node:module');
+    const pkg = createRequire(import.meta.url)('../package.json') as { version: string };
+
+    const { platform, accessory, device, setChars } = harness();
+    const transport = new FakeTuyaDevice();
+    new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
+
+    const firmware = setChars.filter(([c]) => c === 'FirmwareRevision').map(([, v]) => v);
+    expect(firmware).toContain(pkg.version);
   });
 });
