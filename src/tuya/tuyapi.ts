@@ -104,6 +104,12 @@ export class TuyapiDevice implements TuyaDevice {
    * Cleared as soon as any value for the datapoint is broadcast.
    */
   private readonly unbroadcastConfirmed = new Map<string, DpValue>();
+  /**
+   * Datapoints with a write in flight, and the value that write expects the fan to
+   * report back. `forwardDps` resolves one of these the moment the fan echoes a matching
+   * value, which is how a write is confirmed — see `verifyWrite`.
+   */
+  private readonly pendingConfirm = new Map<string, { expected: DpValue; confirm: () => void }>();
 
   private readonly forwardDps = (data: unknown) => {
     const dps = (data as { dps?: Record<string, DpValue> } | undefined)?.dps;
@@ -118,6 +124,14 @@ export class TuyapiDevice implements TuyaDevice {
     const now = Date.now();
     const filtered: Record<string, DpValue> = {};
     for (const [dp, value] of Object.entries(dps)) {
+      // The fan pushing the value we just wrote IS the confirmation that the write
+      // landed — and it arrives promptly, unlike a readback (see `awaitEcho`). Consume
+      // it here, before suppression, so the write can settle on it. Only an exact match
+      // counts, so a stale echo carrying the OLD value can never confirm anything.
+      const pending = this.pendingConfirm.get(dp);
+      if (pending && value === pending.expected) {
+        pending.confirm();
+      }
       const until = this.echoSuppressedUntil.get(dp);
       if (until !== undefined && now < until) {
         this.suppressedEcho.set(dp, value);
@@ -568,34 +582,81 @@ export class TuyapiDevice implements TuyaDevice {
   }
 
   /**
-   * Bounded readback confirming a single datapoint write actually landed. Rejects on
-   * disconnect, timeout, or a value mismatch — any of which means the fan must not be
-   * treated as having received this datapoint.
+   * Confirms a single datapoint write actually landed. Rejects on disconnect, or when
+   * the fan neither echoed nor read back the value within `WRITE_APPLY_MS` — either of
+   * which means the fan must not be treated as having received this datapoint.
+   *
+   * Two independent signals race, because measurement on real hardware showed neither is
+   * sufficient alone:
+   *
+   * - The fan's own `data`/`dp-refresh` push (`awaitEcho`). This is the FAST and reliable
+   *   one: the fan reports its new state within milliseconds of applying a change.
+   * - A polled readback (`readDp`). Its per-datapoint form kept returning the previous
+   *   value for many seconds after a write, and the full-schema form did too — spaced
+   *   writes five seconds apart still read stale. Polling alone therefore failed
+   *   essentially every write even though the fan had applied it correctly. It stays as a
+   *   fallback for a fan that applies a value silently without pushing it.
    */
   private async verifyWrite(dp: string, expected: DpValue): Promise<void> {
     const deadline = Date.now() + WRITE_APPLY_MS;
-    let actual: unknown;
-    for (;;) {
-      if (!this.connectedState) {
-        throw new Error(`[${this.opts.id}] write to dp ${dp} could not be confirmed: device disconnected`);
+    const echo = this.awaitEcho(dp, expected);
+    try {
+      let actual: unknown;
+      for (;;) {
+        if (!this.connectedState) {
+          throw new Error(`[${this.opts.id}] write to dp ${dp} could not be confirmed: device disconnected`);
+        }
+        if (echo.settled()) {
+          return;
+        }
+        try {
+          actual = await this.readDp(dp);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`[${this.opts.id}] write to dp ${dp} could not be confirmed: ${message}`, { cause: error });
+        }
+        // The echo can land while the readback above is in flight, so re-check it here
+        // rather than trusting a read that was already stale when it was issued.
+        if (actual === expected || echo.settled()) {
+          return;
+        }
+        if (Date.now() >= deadline) {
+          throw new Error(`[${this.opts.id}] write to dp ${dp} was not applied (device reports ${JSON.stringify(actual)})`);
+        }
+        await Promise.race([sleep(WRITE_POLL_MS), echo.promise]);
       }
-      try {
-        actual = await this.readDp(dp);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`[${this.opts.id}] write to dp ${dp} could not be confirmed: ${message}`, { cause: error });
-      }
-      if (actual === expected) {
-        return;
-      }
-      // Still the old value: the fan has not applied the write YET, which is the normal
-      // case rather than a failure. Keep looking until the value shows up or the fan has
-      // had long enough that it plainly never will.
-      if (Date.now() >= deadline) {
-        throw new Error(`[${this.opts.id}] write to dp ${dp} was not applied (device reports ${JSON.stringify(actual)})`);
-      }
-      await sleep(WRITE_POLL_MS);
+    } finally {
+      echo.cancel();
     }
+  }
+
+  /** Resolves when the fan pushes `expected` for `dp` — see `forwardDps`. */
+  private awaitEcho(dp: string, expected: DpValue): { promise: Promise<void>; settled: () => boolean; cancel: () => void } {
+    let seen = false;
+    let resolve!: () => void;
+    const promise = new Promise<void>(r => {
+      resolve = r;
+    });
+    const entry = {
+      expected,
+      confirm: () => {
+        seen = true;
+        resolve();
+      },
+    };
+    this.pendingConfirm.set(dp, entry);
+    return {
+      promise,
+      settled: () => seen,
+      cancel: () => {
+        // Only clear our own registration: a newer write for this dp may already have
+        // replaced it, and clearing that would strand the newer write's confirmation.
+        if (this.pendingConfirm.get(dp) === entry) {
+          this.pendingConfirm.delete(dp);
+        }
+        resolve();
+      },
+    };
   }
 
   async get(): Promise<Record<string, DpValue>> {

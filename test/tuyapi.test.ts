@@ -274,6 +274,43 @@ describe('reconnect supervision', () => {
     await rejects;
   });
 
+  it('confirms a write from the fan echoing the value, even while every readback stays stale', async () => {
+    // Measured on real hardware: after writing speed step 3 to a fan sitting at 2, BOTH
+    // the per-datapoint and the full-schema readback keep reporting 2 — spaced writes
+    // five seconds apart still read stale — while the fan's own data push carries 3
+    // within milliseconds. Confirming from readbacks alone failed essentially every
+    // write despite the fan having applied it.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    get.mockImplementation(async () => ({ dps: { '3': 2 } })); // never catches up
+
+    const write = d.set({ '3': 3 });
+    await vi.advanceTimersByTimeAsync(50);
+    handlers['data']?.[0]?.({ dps: { '3': 3 } }); // the fan reports what it applied
+
+    await vi.advanceTimersByTimeAsync(50);
+    await expect(write).resolves.toBeUndefined();
+  });
+
+  it('does not let a stale echo carrying the OLD value confirm a write', async () => {
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    get.mockImplementation(async () => ({ dps: { '3': 2 } }));
+
+    const write = d.set({ '3': 3 });
+    const assertion = expect(write).rejects.toThrow(/was not applied/i);
+    await vi.advanceTimersByTimeAsync(50);
+    handlers['data']?.[0]?.({ dps: { '3': 2 } }); // the PREVIOUS value, not ours
+    await vi.advanceTimersByTimeAsync(3_000);
+    await assertion;
+  });
+
   it('waits for a slow fan to apply a write instead of failing it on the first stale readback', async () => {
     // Real hardware, measured on the bridge: set() is fire-and-forget, so the first
     // readback after writing speed step 3 to a fan sitting at 2 returns 2 — the value
