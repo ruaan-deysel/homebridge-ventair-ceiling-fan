@@ -1,0 +1,40 @@
+version: 2
+
+updates:
+  # Keeps the SHA-pinned actions in ci.yml/release.yml/publish.yml current. Pinning to a
+  # commit is what makes those workflows immutable; Dependabot is what stops that pin
+  # from silently rotting, and it rewrites both the SHA and the trailing version comment.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+      prefix-development: deps-dev
+    labels:
+      - dependencies
+    # One PR per production dependency, but batch the dev toolchain: eslint/vitest/tsc
+    # updates land together or not at all, and eight separate PRs to review is noise.
+    groups:
+      dev-dependencies:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Homebridge and its HAP library are peer dependencies whose major versions are a
+      # deliberate compatibility decision (v2 support was the point of this branch), not
+      # something to bump automatically.
+      - dependency-name: homebridge
+        update-types: [version-update:semver-major]
+      - dependency-name: hap-nodejs
+        update-types: [version-update:semver-major]
