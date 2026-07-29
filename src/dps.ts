@@ -18,9 +18,9 @@ export const DP = {
 
 /**
  * Modes this plugin WRITES over the LAN: "Normal" and "Sleep". A write probe (both
- * powered off and running) showed anything else — including the cloud's "nature" and
- * "smart" — comes back as "Sleep", consistent with the firmware resolving the enum by
- * index and defaulting unknowns to index 1.
+ * powered off and running) showed that the cloud's "nature" and "smart" come back as
+ * "Sleep", consistent with the firmware resolving the enum by index and defaulting
+ * unrecognised names to index 1. Those are the only two alternatives that were probed.
  *
  * That is a fact about those two strings, NOT proof the mode set is closed: a fan driven
  * from the Smart Life app reported "eco" (2026-07-29). Whether "Eco" is writable over the

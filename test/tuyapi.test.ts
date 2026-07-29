@@ -257,6 +257,20 @@ describe('reconnect supervision', () => {
     await expect(b.set({ '1': true })).rejects.toThrow(/Office 1 Fan/);
   });
 
+  it('neutralises format tokens and newlines in an operator-supplied fan name', async () => {
+    // The name lands in the format-string position of the log call, so a raw `%s` would
+    // swallow the following argument and a newline would forge an extra log line.
+    const d = new TuyapiDevice({ ...opts, label: 'Fan %s\nERROR forged' }, log);
+    // `%s` must arrive ESCAPED as `%%s` (which util.format renders as a literal "%s"),
+    // and the newline must be gone so the name cannot fabricate a second line.
+    await expect(d.set({ '1': true })).rejects.toThrow(
+      expect.objectContaining({ message: expect.stringContaining('Fan %%s ERROR forged') }),
+    );
+    await expect(d.set({ '1': true })).rejects.toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining('\n') }),
+    );
+  });
+
   it('rejects the whole patch when the device disconnects between two datapoints', async () => {
     // The connectivity guard used to run once, before the loop — a disconnect that
     // happened *between* two sequential datapoint writes (now genuinely possible:

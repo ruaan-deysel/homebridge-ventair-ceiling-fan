@@ -109,7 +109,8 @@ describe('fan control', () => {
     await transport.connect();
     new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
 
-    // Device accepts only Normal and Sleep, and requires capitalised strings.
+    // The Sleep switch writes only Normal/Sleep, and the device requires capitalised
+    // strings. (Other modes exist -- a fan reported "eco" -- but none is writable here.)
     await handlers.get('Sleep.On')?.onSet?.(true);
     expect(transport.state[DP.mode]).toBe('Sleep');
 

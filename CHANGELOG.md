@@ -5,6 +5,38 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-07-29
+
+### Fixed
+
+- Scanning the network no longer marks working fans as **Not found on network**. A scan
+  that finds nothing cannot tell "no fan is online" apart from "the broadcasts never
+  reached Homebridge" — with Docker bridging, AP client isolation or a VLAN that drops
+  broadcasts, every configured fan was flagged while all of them were reachable and
+  controllable. A scan that finds some fans but misses one still warns about that fan.
+- The scan result now says explicitly when nothing was found and that fan status was left
+  unchanged, so a green badge beside "Found 0" cannot be read as "this fan answered".
+
+### Changed
+
+- Log messages from the Tuya transport identify a fan by its configured name instead of
+  its device id. The full id identifies real hardware and appeared in every warning, so
+  pasting a log into a bug report published it. An id suffix alone would not have been
+  safe either: ids from one production batch differ only in their final characters.
+- **Known limitation:** running Homebridge with `DEBUG=TuyAPI` makes the `tuyapi`
+  dependency print its own payloads, including the full device id. That output bypasses
+  this plugin, so redact debug logs before sharing them.
+
+### Documentation
+
+- Corrected the claim, repeated in `CLAUDE.md`, `src/dps.ts`, `src/accessory.ts` and in
+  the 2.0.0 entry below, that the fan has only `Normal` and `Sleep`. A fan driven from the
+  Smart Life app reported a third mode, `eco`. The earlier write probe showed only that
+  `nature`/`smart` are not writable over the LAN — not that the mode set is closed.
+  Whether `Eco` can be written over the LAN is still untested, because a fan accepts one
+  LAN session at a time and the plugin holds it. Inbound `eco` is preserved correctly and
+  needed no code change; HomeKit cannot currently display or restore it.
+
 ## [2.0.0] - 2026-07-29
 
 ### Removed

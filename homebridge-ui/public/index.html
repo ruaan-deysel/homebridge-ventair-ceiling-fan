@@ -371,7 +371,14 @@
         const found = await homebridge.request('/discover');
         // Merge, never replace — a device missed by this scan stays known from a
         // previous one, and a configured fan missed here is never dropped.
-        lastScanIds = new Set(found.map(d => d.id));
+        //
+        // A zero-result scan does not record itself at all. It carries no information
+        // about any individual fan (see `badgeFor`), so overwriting the last scan with an
+        // empty set would CLEAR a real warning raised by an earlier scan that did see
+        // other fans — turning a genuinely-missing fan green.
+        if (found.length > 0) {
+          lastScanIds = new Set(found.map(d => d.id));
+        }
         for (const d of found) {
           discovered.set(d.id, { ip: d.ip, version: d.version });
         }

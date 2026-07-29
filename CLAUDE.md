@@ -95,7 +95,9 @@ across all of them.
   (`TuyapiOptions.label`), never by the device id — a short id suffix is only a fallback,
   and it is not guaranteed unique across one production batch.
   **Caveat this plugin cannot close:** running Homebridge with `DEBUG=TuyAPI` makes the
-  tuyapi dependency print its own GET/SET payloads and the discovery id, full id included.
-  That output bypasses everything here, so ask for a redacted log when debugging with it.
+  tuyapi dependency print its own GET/SET payloads, the discovery id and device IPs — and,
+  on protocol 3.4/3.5, the local/remote randoms and the negotiated **session key**. That
+  output bypasses everything here, and session material matters more than the id, so treat
+  a `DEBUG=TuyAPI` log as secret rather than redacting only the ids out of it.
 - Commit messages carry no tool attribution or `Co-Authored-By` trailers.
 - New behaviour gets a test that demonstrably fails without the change.

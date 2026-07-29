@@ -186,6 +186,21 @@ describe('platform lifecycle', () => {
     expect(opts.ip).toBe('192.0.2.11');
   });
 
+  it('gives the transport the fan name, so its log lines carry no device id', async () => {
+    // Guards the WIRING, not just the getter: dropping `label` here would silently send
+    // every transport line back to an id suffix, which unit-testing TuyapiDevice alone
+    // cannot catch because those tests inject a label directly.
+    const { log, api, handlers } = harness();
+    (TuyapiDevice as unknown as ReturnType<typeof vi.fn>).mockClear();
+
+    new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [device] } as never, api as never);
+    await handlers.didFinishLaunching?.();
+    await vi.waitFor(() => expect(TuyapiDevice).toHaveBeenCalled());
+
+    const [opts] = (TuyapiDevice as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [{ label?: string }];
+    expect(opts.label).toBe(device.name);
+  });
+
   it('lets an explicitly configured version win over the discovered one', async () => {
     const { log, api, handlers } = harness();
     (TuyapiDevice as unknown as ReturnType<typeof vi.fn>).mockClear();

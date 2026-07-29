@@ -174,13 +174,29 @@ export class TuyapiDevice implements TuyaDevice {
    * real hardware and users paste logs into public issues, so it never appears here; the
    * whole id goes to the Tuya transport (`createDevice`) and nowhere else.
    *
-   * Prefers the configured fan name, which is unambiguous. The id suffix is only a
-   * fallback, and it is NOT guaranteed unique: real ids from one production batch differ
-   * only in their last characters (…a54652 and …a54654 are two fans in one deployment),
-   * so two fans can in principle share a suffix. The name avoids that entirely.
+   * Prefers the configured fan name. The id suffix is only a fallback, and it is NOT
+   * guaranteed unique: real ids from one production batch differ only in their last
+   * characters (…a54652 and …a54654 are two fans in one deployment), so two fans can in
+   * principle share a suffix. A name avoids that — though nothing stops an operator
+   * naming two fans the same, in which case their lines are as ambiguous as the names.
    */
   private get tag(): string {
-    return this.opts.label ?? `…${this.opts.id.slice(-6)}`;
+    const label = this.opts.label?.trim();
+    if (!label) {
+      return `\u2026${this.opts.id.slice(-6)}`;
+    }
+    // The name is operator-supplied free text and lands in the FORMAT-STRING position of
+    // log.debug('[' + tag + '] ...', error). Left raw, a `%s` in it would swallow the
+    // following argument -- the error itself would vanish from the line -- and a newline
+    // would forge what reads as a separate log entry. Neither is likely; both are free to
+    // prevent. Length is bounded so one absurd name cannot dominate every line.
+    return label
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+      .replace(/%/g, '%%')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 40);
   }
 
   private createDevice(): TuyAPI {
