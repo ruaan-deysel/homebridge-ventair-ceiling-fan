@@ -37,17 +37,28 @@ into HomeKit.
 | DP | Meaning | Values |
 |----|---------|--------|
 | 1 | fan power | boolean |
-| 2 | fan mode | `'Normal'` \| `'Sleep'` (capitalised on the wire) |
+| 2 | fan mode | `'Normal'` \| `'Sleep'` \| `'Eco'` (capitalised on the wire; see below — the set is open) |
 | 3 | fan speed | 1–5 |
 | 8 | rotation direction | `'forward'` \| `'reverse'` |
 | 15 | light power | boolean (untested — no unit here has a light) |
 | 16 | light brightness | device scale, mapped to 0–100 |
 | 22 | countdown | present on the hardware, deliberately unimplemented |
 
-Confirmed by write probe on live hardware: the fan accepts **only** Normal and Sleep over
-the LAN. The cloud spec's `nature`/`smart` are resolved by index and come back as Sleep, so
-unrecognised mode strings are preserved rather than mapped. `exposeModeSwitches` therefore
-adds a single Sleep switch — there is no third mode and no `SwingMode` mapping any more.
+Mode is **not** a two-value enum. An earlier write probe found that writing `nature`/`smart`
+over the LAN lands on Sleep, and this file used to conclude from that "there is no third
+mode". That conclusion was wrong: on 2026-07-29 a fan driven from the Smart Life app
+reported `{"mode":"eco"}` on DP 2, cycling eco → sleep → eco → normal. So at least three
+modes exist — the earlier probe showed only that those two *particular* strings are not
+writable over the LAN, not that the mode set is closed.
+
+Whether `Eco` can be **written** over the LAN is still unknown: each fan accepts only one
+LAN session at a time, so a probe cannot run while the plugin holds the connection.
+
+This is exactly why `toFanState` lowercases and keeps whatever string arrives instead of
+mapping onto a known enum — `eco` passed through cleanly with no crash and no wrong state.
+Keep that behaviour. `exposeModeSwitches` still adds only a Sleep switch, so a fan in eco
+shows the switch off, and toggling it writes Normal — HomeKit cannot currently show or
+restore eco.
 
 Speed is exposed as 0–100% with `minStep: 20`; conversion lives in `stepToPercent` /
 `percentToStep` in `src/dps.ts` and nowhere else.

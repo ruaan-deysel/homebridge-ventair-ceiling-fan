@@ -98,9 +98,17 @@ export class CeilingFanAccessory {
     const cachedSwitches = this.accessory.services.filter(s => s.UUID === this.accessory.getService(S.Switch)?.UUID);
 
     if (device.exposeModeSwitches) {
-      // Hardware has exactly two reachable modes (Normal, Sleep) — one switch covers it.
-      // On writes Sleep, off writes Normal. Do not add Nature/Smart switches: writing
-      // anything other than Normal/Sleep silently lands on Sleep on the real hardware.
+      // One switch, covering Sleep only: on writes Sleep, off writes Normal.
+      //
+      // The hardware does NOT have exactly two modes — a fan driven from the Smart Life
+      // app reported mode "eco" (2026-07-29). What the earlier probe established is
+      // narrower: writing `nature`/`smart` over the LAN silently lands on Sleep, so those
+      // two are not worth exposing. Whether `Eco` is writable over the LAN is untested
+      // (a fan allows one LAN session, so it cannot be probed while this plugin holds it).
+      //
+      // Consequence to keep in mind: a fan sitting in eco shows this switch OFF, and
+      // toggling it off writes Normal, taking the fan out of eco with no way back from
+      // HomeKit. Inbound eco itself is preserved — see `toFanState`.
       const label = 'Sleep';
       this.sleepSwitch = cachedSwitches.find(s => s.subtype === sleepSubtype)
         ?? cachedSwitches[0] // adopt a legacy subtype-less Switch rather than orphaning it
