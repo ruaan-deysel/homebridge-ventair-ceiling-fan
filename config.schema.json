@@ -36,6 +36,8 @@
               "title": "Local Key",
               "required": true,
               "format": "password",
+              "minLength": 16,
+              "maxLength": 16,
               "description": "16-character Tuya local key"
             },
             "hasLight": {
@@ -65,8 +67,8 @@
             "version": {
               "type": "string",
               "title": "Protocol Version",
-              "default": "3.3",
               "required": false,
+              "description": "Leave blank to use the version the fan announces during discovery (usually 3.3).",
               "oneOf": [
                 { "title": "3.1", "enum": ["3.1"] },
                 { "title": "3.2", "enum": ["3.2"] },

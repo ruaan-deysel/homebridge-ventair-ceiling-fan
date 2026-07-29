@@ -17,7 +17,11 @@ export const DeviceSchema = z.object({
   // bridges won't have it configured, so this stays off unless explicitly turned on.
   exposeMatter: z.boolean().default(false),
   ip: z.ipv4('Not a valid IPv4 address').optional(),
-  version: z.enum(PROTOCOL_VERSIONS).default('3.3'),
+  // Deliberately no `.default('3.3')`: a defaulted value is indistinguishable from an
+  // explicitly configured one, which made a discovered 3.4/3.5 fan unreachable because
+  // the default silently won. Absent here means "not specified" so discovery can fill it
+  // in; platform.ts applies the 3.3 fallback at construction.
+  version: z.enum(PROTOCOL_VERSIONS).optional(),
 });
 
 export type VentairDevice = z.infer<typeof DeviceSchema>;
@@ -58,6 +62,23 @@ export function parseDevices(config: { devices?: unknown }, log: Pick<Logging, '
   }
 
   return devices;
+}
+
+/**
+ * Every device ID present in the RAW config, valid entry or not.
+ *
+ * Stale-accessory cleanup must key off this, never off `parseDevices` — an entry that
+ * failed validation is still a fan the user configured, and unregistering its accessory
+ * over a mistyped key discards its room, scenes and automations irreversibly.
+ * Defensive by necessity: a raw entry may be any shape at all.
+ */
+export function configuredDeviceIds(config: { devices?: unknown }): string[] {
+  if (!Array.isArray(config.devices)) {
+    return [];
+  }
+  return config.devices
+    .map(raw => (raw && typeof raw === 'object' ? (raw as { id?: unknown }).id : undefined))
+    .filter((id): id is string => typeof id === 'string' && id.length > 0);
 }
 
 function describe(raw: unknown, index: number): string {

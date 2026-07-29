@@ -11,8 +11,24 @@ vi.mock('../src/accessory.js', () => ({
   CeilingFanAccessory: vi.fn(),
 }));
 
+// Transport construction is what carries the resolved protocol version — mocked so the
+// tests can assert on the options it was handed without opening a socket.
+vi.mock('../src/tuya/tuyapi.js', () => ({
+  TuyapiDevice: vi.fn(class {
+    connected = false;
+    connect = vi.fn().mockResolvedValue(undefined);
+    disconnect = vi.fn();
+    set = vi.fn().mockResolvedValue(undefined);
+    get = vi.fn().mockResolvedValue({});
+    onDps = vi.fn(() => () => {});
+    onConnected = vi.fn();
+    onDisconnected = vi.fn();
+  }),
+}));
+
 const { HomebridgeVentairCeilingFan } = await import('../src/platform.js');
 const { CeilingFanAccessory } = await import('../src/accessory.js');
+const { TuyapiDevice } = await import('../src/tuya/tuyapi.js');
 const { discover } = await import('../src/tuya/discovery.js');
 const { matterUuid } = await import('../src/matter.js');
 
@@ -139,6 +155,68 @@ describe('platform lifecycle', () => {
     expect(removed).toEqual([stale]);
   });
 
+  it('keeps the cached accessory of a device whose config failed validation', async () => {
+    // parseDevices() drops an invalid entry, but the entry is still IN the config — the
+    // user mistyped a key, they did not remove the fan. Unregistering it here would throw
+    // away its room, scenes and automations for a typo, which the plugin cannot undo.
+    const { log, api, handlers } = harness();
+    const broken = { ...device, id: 'e'.repeat(20), name: 'Typo Fan', key: 'too-short' };
+    const platform = new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [broken] } as never, api as never);
+
+    const cached = { UUID: `uuid-${broken.id}`, displayName: 'Typo Fan', context: {} };
+    platform.configureAccessory(cached as never);
+
+    await handlers.didFinishLaunching?.();
+
+    expect(api.unregisterPlatformAccessories).not.toHaveBeenCalled();
+    expect(platform.accessories.has(cached.UUID)).toBe(true);
+  });
+
+  it('still unregisters a cached accessory whose device was removed from config, alongside an invalid one', async () => {
+    const { log, api, handlers } = harness();
+    const broken = { ...device, id: 'e'.repeat(20), name: 'Typo Fan', key: 'too-short' };
+    const platform = new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [broken] } as never, api as never);
+
+    platform.configureAccessory({ UUID: `uuid-${broken.id}`, displayName: 'Typo Fan', context: {} } as never);
+    const gone = { UUID: 'uuid-gone', displayName: 'Removed Fan', context: {} };
+    platform.configureAccessory(gone as never);
+
+    await handlers.didFinishLaunching?.();
+    await vi.waitFor(() => expect(api.unregisterPlatformAccessories).toHaveBeenCalled());
+
+    const [, , removed] = api.unregisterPlatformAccessories.mock.calls[0];
+    expect(removed).toEqual([gone]);
+  });
+
+  it('gives the transport the protocol version discovery reported when config does not set one', async () => {
+    const { log, api, handlers } = harness();
+    (TuyapiDevice as unknown as ReturnType<typeof vi.fn>).mockClear();
+    (discover as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([{ id: device.id, ip: '192.0.2.11', version: '3.4' }]);
+
+    new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [device] } as never, api as never);
+    await handlers.didFinishLaunching?.();
+    await vi.waitFor(() => expect(TuyapiDevice).toHaveBeenCalled());
+
+    const [opts] = (TuyapiDevice as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [{ version: string; ip?: string }];
+    expect(opts.version).toBe('3.4');
+    expect(opts.ip).toBe('192.0.2.11');
+  });
+
+  it('lets an explicitly configured version win over the discovered one', async () => {
+    const { log, api, handlers } = harness();
+    (TuyapiDevice as unknown as ReturnType<typeof vi.fn>).mockClear();
+    (discover as unknown as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([{ id: device.id, ip: '192.0.2.11', version: '3.4' }]);
+
+    new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [{ ...device, version: '3.3' }] } as never, api as never);
+    await handlers.didFinishLaunching?.();
+    await vi.waitFor(() => expect(TuyapiDevice).toHaveBeenCalled());
+
+    const [opts] = (TuyapiDevice as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [{ version: string }];
+    expect(opts.version).toBe('3.3');
+  });
+
   it('still sets up a device with a static ip when discovery throws', async () => {
     const { log, api, handlers } = harness();
     (discover as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('network down'));
@@ -251,6 +329,21 @@ describe('Matter', () => {
     // The cached accessory must never have been classified as stale over a transient
     // setup failure — removeStaleMatterAccessories() must not even reach the point of
     // calling unregisterPlatformAccessories for it.
+    expect(matter.unregisterPlatformAccessories).not.toHaveBeenCalled();
+  });
+
+  it('keeps a cached Matter accessory whose config entry failed validation', async () => {
+    // The HAP stale path's sibling bug: a mistyped key drops the entry from the parsed
+    // list, so its Matter UUID looks undesired and the endpoint gets destroyed. An entry
+    // still present in config must keep its Matter accessory whether or not it parsed.
+    const { log, api, handlers, matter } = matterHarness();
+    const broken = { ...device, id: 'e'.repeat(20), name: 'Typo Matter Fan', key: 'too-short', exposeMatter: true };
+    const platform = new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [broken] } as never, api as never);
+
+    platform.configureMatterAccessory({ UUID: matterUuid(broken.id), displayName: 'Typo Matter Fan' } as never);
+
+    await handlers.didFinishLaunching?.();
+
     expect(matter.unregisterPlatformAccessories).not.toHaveBeenCalled();
   });
 

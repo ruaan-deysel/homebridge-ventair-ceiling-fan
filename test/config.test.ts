@@ -15,7 +15,7 @@ describe('parseDevices', () => {
     const [d] = parseDevices({ devices: [valid] }, log());
     expect(d.hasLight).toBe(false);
     expect(d.exposeModeSwitches).toBe(false);
-    expect(d.version).toBe('3.3');
+    expect(d.version).toBeUndefined(); // absent, not defaulted — see DeviceSchema
     expect(d.ip).toBeUndefined();
   });
 

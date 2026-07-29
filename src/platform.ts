@@ -1,9 +1,10 @@
 import type { API, Characteristic, DynamicPlatformPlugin, Logging, MatterAccessory, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
 
 import { CeilingFanAccessory } from './accessory.js';
-import { parseDevices, type VentairDevice } from './config.js';
+import { configuredDeviceIds, parseDevices, type VentairDevice } from './config.js';
 import { MatterFanBridge, matterUuid } from './matter.js';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
+import type { DiscoveredDevice } from './tuya/discovery.js';
 import { discover } from './tuya/discovery.js';
 import { TuyapiDevice } from './tuya/tuyapi.js';
 
@@ -13,8 +14,9 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
 
   public readonly accessories: Map<string, PlatformAccessory> = new Map();
   public readonly matterAccessories: Map<string, MatterAccessory> = new Map();
-  private readonly discoveredCacheUUIDs: string[] = [];
   private readonly devices: VentairDevice[];
+  /** IDs from the RAW config — see `removeStaleAccessories`. */
+  private readonly configuredIds: string[];
 
   constructor(
     public readonly log: Logging,
@@ -24,6 +26,7 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
     this.Service = api.hap.Service;
     this.Characteristic = api.hap.Characteristic;
     this.devices = parseDevices(config as { devices?: unknown }, log);
+    this.configuredIds = configuredDeviceIds(config as { devices?: unknown });
 
     this.log.debug('Finished initializing platform:', this.config.name);
 
@@ -56,16 +59,23 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
     // to the "not discovered this run" bucket and removeStaleMatterAccessories()
     // permanently unregistered it — destroying the user's cached Matter endpoint state
     // for what was often just a one-off startup error.
-    const desiredMatterUUIDs = this.devices.filter(d => d.exposeMatter).map(d => matterUuid(d.id));
+    const parsedIds = new Set(this.devices.map(d => d.id));
+    const desiredMatterUUIDs = [
+      ...this.devices.filter(d => d.exposeMatter).map(d => matterUuid(d.id)),
+      // An entry that failed validation is still in the config, and its `exposeMatter`
+      // value is unknowable (that's what failing validation means) — so its Matter UUID
+      // is preserved rather than unregistered. Deleting a live Matter endpoint over a
+      // mistyped key is exactly the HAP-side bug removeStaleAccessories() now avoids.
+      ...this.configuredIds.filter(id => !parsedIds.has(id)).map(matterUuid),
+    ];
 
     // No discovery/connection attempt when nothing is configured, but stale cleanup
     // below must still run — otherwise clearing `devices` leaves dead tiles in HomeKit
-    // forever, since discoveredCacheUUIDs stays empty and every previously-cached
-    // accessory looks "stale" but is never actually removed.
+    // forever.
     if (this.devices.length > 0) {
       // A discovery failure must not abort setup for devices with a static `ip` — same
       // per-device containment policy as parseDevices() and the setupDevice() try/catch below.
-      let addresses: Map<string, string>;
+      let addresses: Map<string, DiscoveredDevice>;
       try {
         addresses = await this.resolveAddresses();
       } catch (error) {
@@ -83,7 +93,6 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
         } catch (error) {
           this.log.error(`Setup failed for "${device.name}":`, error instanceof Error ? error.message : error);
         }
-        this.discoveredCacheUUIDs.push(uuid);
       }
     }
 
@@ -91,15 +100,20 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
     await this.removeStaleMatterAccessories(desiredMatterUUIDs);
   }
 
-  private async setupDevice(device: VentairDevice, uuid: string, addresses: Map<string, string>): Promise<void> {
-    const ip = device.ip ?? addresses.get(device.id);
+  private async setupDevice(device: VentairDevice, uuid: string, addresses: Map<string, DiscoveredDevice>): Promise<void> {
+    const found = addresses.get(device.id);
+    const ip = device.ip ?? found?.ip;
+    // An explicitly configured version is the user's override and always wins. Otherwise
+    // use what the device announced over UDP — a 3.4/3.5 fan constructed as 3.3 never
+    // connects, which silently defeated the automatic discovery this plugin advertises.
+    const version = device.version ?? found?.version ?? '3.3';
 
     if (!ip) {
       // Not fatal: tuyapi's own find() retries in the background.
       this.log.warn(`Could not discover an address for "${device.name}"; it will keep retrying.`);
     }
 
-    const transport = new TuyapiDevice({ id: device.id, key: device.key, version: device.version, ip }, this.log);
+    const transport = new TuyapiDevice({ id: device.id, key: device.key, version, ip }, this.log);
 
     const existing = this.accessories.get(uuid);
     if (existing) {
@@ -154,23 +168,32 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
   }
 
   /** Only run discovery if at least one device is missing an explicit address. */
-  private async resolveAddresses(): Promise<Map<string, string>> {
+  private async resolveAddresses(): Promise<Map<string, DiscoveredDevice>> {
     if (this.devices.every(d => d.ip)) {
       return new Map();
     }
     this.log.debug('Scanning for Tuya devices on the local network...');
     const found = await discover();
     this.log.debug(`Discovery found ${found.length} device(s).`);
-    return new Map(found.map(d => [d.id, d.ip]));
+    // The whole record, not just the address: the announced protocol version is the
+    // other half of what a device needs to connect. See `setupDevice`.
+    return new Map(found.map(d => [d.id, d]));
   }
 
   /**
    * Accessories dropped from config were previously left registered forever,
    * leaving dead tiles in the Home app.
+   *
+   * Keyed off the RAW configured IDs, never the parsed ones: `parseDevices` drops an
+   * entry that fails validation, so keying off it meant one mistyped key didn't just
+   * disable a fan — it unregistered it, discarding its room, scenes and automations
+   * with no way for the plugin to put them back. An invalid entry is skipped from setup
+   * but keeps its accessory; only an ID genuinely gone from config is removed.
    */
   private removeStaleAccessories(): void {
+    const desired = new Set(this.configuredIds.map(id => this.api.hap.uuid.generate(id)));
     const stale = [...this.accessories.entries()]
-      .filter(([uuid]) => !this.discoveredCacheUUIDs.includes(uuid))
+      .filter(([uuid]) => !desired.has(uuid))
       .map(([, accessory]) => accessory);
 
     if (stale.length === 0) {
