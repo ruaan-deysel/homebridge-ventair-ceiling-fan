@@ -40,6 +40,41 @@ describe('parseDevices', () => {
     expect(l.warn.mock.calls[0].join(' ')).toMatch(/16 characters/);
   });
 
+  it('accepts a real-world alphanumeric (non-hex) device id', () => {
+    // Tuya device IDs are alphanumeric, not hex — codetheweb/tuyapi#481 reports ids like
+    // this one, containing letters past 'f'. A hex-only rule silently drops every such fan.
+    const l = log();
+    const nonHex = 'bf97ae127518bd821b1mdo'; // synthetic, 22 alphanumeric chars
+    const parsed = parseDevices({ devices: [{ ...valid, id: nonHex }] }, l);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].id).toBe(nonHex);
+    expect(l.warn).not.toHaveBeenCalled();
+  });
+
+  it('still rejects an id carrying path-traversal or injection characters', () => {
+    const l = log();
+    expect(parseDevices({ devices: [{ ...valid, id: '../../v1.0/users/all' }] }, l)).toHaveLength(0);
+    expect(parseDevices({ devices: [{ ...valid, id: 'bf01000000000000000a?x=1' }] }, l)).toHaveLength(0);
+  });
+
+  it('rejects a second device reusing an already-accepted id', () => {
+    // Two entries with the same id generate the same HAP UUID, which surfaced as
+    // duplicate fans in the Home app.
+    const l = log();
+    const parsed = parseDevices({ devices: [valid, { ...valid, name: 'Duplicate Fan' }] }, l);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].name).toBe('Family Room Fan');
+    expect(l.warn.mock.calls[0].join(' ')).toMatch(/duplicate/i);
+  });
+
+  it('does not let an invalid entry reserve its id against a later valid one', () => {
+    // Duplicate tracking must only record ids that actually made it through validation.
+    const l = log();
+    const parsed = parseDevices({ devices: [{ ...valid, key: 'too-short' }, valid] }, l);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].key).toBe(valid.key);
+  });
+
   it('returns empty and warns when devices is missing', () => {
     const l = log();
     expect(parseDevices({}, l)).toEqual([]);

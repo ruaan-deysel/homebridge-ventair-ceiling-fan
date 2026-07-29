@@ -4,7 +4,11 @@ import { z } from 'zod';
 export const PROTOCOL_VERSIONS = ['3.1', '3.2', '3.3', '3.4', '3.5'] as const;
 
 export const DeviceSchema = z.object({
-  id: z.string().regex(/^[0-9a-f]{16,26}$/i, 'Tuya device ID should be 16-26 hex characters'),
+  // Alphanumeric, NOT hex: real Tuya ids contain letters past 'f' (codetheweb/tuyapi#481
+  // reports e.g. one ending "1mdo"), and a hex-only rule silently dropped those fans.
+  // Stays anchored and alphanumeric-only — the id is interpolated into signed cloud API
+  // paths, so path-traversal and query-injection payloads must still be rejected here.
+  id: z.string().regex(/^[A-Za-z0-9]{16,26}$/, 'Tuya device ID should be 16-26 letters or digits'),
   key: z.string().length(16, 'Tuya local keys are exactly 16 characters'),
   name: z.string().min(1, 'Device name cannot be empty'),
   hasLight: z.boolean().default(false),
@@ -31,10 +35,20 @@ export function parseDevices(config: { devices?: unknown }, log: Pick<Logging, '
   }
 
   const devices: VentairDevice[] = [];
+  // Only ids that actually passed validation are recorded, so a rejected entry can never
+  // reserve an id against a later, valid one.
+  const seen = new Set<string>();
 
   for (const [index, raw] of config.devices.entries()) {
     const result = DeviceSchema.safeParse(raw);
     if (result.success) {
+      // Same id twice means the same HAP UUID twice, which showed up as duplicate fans
+      // in the Home app. Keep the first, drop the rest — same policy as any invalid entry.
+      if (seen.has(result.data.id)) {
+        log.warn(`Skipping ${describe(raw, index)} — duplicate device ID; it is already configured.`);
+        continue;
+      }
+      seen.add(result.data.id);
       devices.push(result.data);
       continue;
     }

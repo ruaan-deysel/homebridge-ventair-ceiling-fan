@@ -24,8 +24,10 @@ const EMPTY_BODY_HASH = crypto.createHash('sha256').update('').digest('hex');
 // Device IDs arrive from UDP broadcasts sent by ANY device on the LAN, and this ID is
 // interpolated into a Tuya API path that gets signed with the user's own credentials.
 // A hostile LAN device broadcasting a crafted gwId must not turn into an arbitrary
-// authenticated Tuya API call. Real Tuya device IDs are 16-26 hex characters.
-const DEVICE_ID_RE = /^[0-9a-f]{16,26}$/i;
+// authenticated Tuya API call. Real Tuya device IDs are 16-26 alphanumeric characters —
+// NOT hex; codetheweb/tuyapi#481 reports ids containing letters past 'f'. Anchored and
+// alphanumeric-only is still enough to reject traversal and query-injection payloads.
+const DEVICE_ID_RE = /^[A-Za-z0-9]{16,26}$/;
 
 const REQUEST_TIMEOUT_MS = 10_000;
 

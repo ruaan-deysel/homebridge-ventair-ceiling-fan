@@ -162,6 +162,15 @@ describe('TuyaCloud device id validation (SSRF guard)', () => {
     expect(requestMock).not.toHaveBeenCalled();
   });
 
+  it('accepts a real-world alphanumeric (non-hex) device id', async () => {
+    // codetheweb/tuyapi#481 — real ids contain letters past 'f'; a hex-only guard
+    // rejected every such fan before it could ever fetch its key.
+    const nonHex = 'bf97ae127518bd821b1mdo';
+    respondWith(200, { success: true, result: { id: nonHex, name: 'Fan', local_key: 'x'.repeat(16), ip: '192.0.2.5', online: true } });
+    const cloud = new TuyaCloud(CLIENT_ID, SECRET, 'eu');
+    await expect(cloud.getDevice(nonHex)).resolves.toMatchObject({ id: nonHex });
+  });
+
   it('accepts a well-formed device id and requests the encoded path', async () => {
     respondWith(200, { success: true, result: { id: VALID_ID, name: 'Fan', local_key: 'x'.repeat(16), ip: '192.0.2.5', online: true } });
     const cloud = new TuyaCloud(CLIENT_ID, SECRET, 'eu');
