@@ -643,6 +643,10 @@ describe('reconnect supervision', () => {
     expect(constructorSpy.mock.calls.length).toBe(instancesAtStart + 3);
     expect(disconnect).toHaveBeenCalledTimes(3);
     expect(disconnected).toHaveBeenCalledTimes(3);
+    // disconnect() alone leaves our own handlers attached to the discarded instance, so
+    // a late event from it would still be routed into the live device — the stale
+    // instance must be detached, not just disconnected.
+    expect(removeAllListeners).toHaveBeenCalledTimes(3);
     // fails if reverted: without recreation, constructorSpy stays at instancesAtStart
     // (the same TuyAPI instance, and its stuck resolvers, is reused across all three
     // timeouts) and `d.connected` never flips false on a timeout at all.

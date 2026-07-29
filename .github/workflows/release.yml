@@ -24,8 +24,11 @@ jobs:
             found { print }
           ' CHANGELOG.md > release-notes.md
 
+          # Shipping a release with an empty body is worse than not shipping it: the tag
+          # is already public and the notes cannot be regenerated from anything else.
           if [ ! -s release-notes.md ]; then
-            echo "No matching CHANGELOG.md section for ${GITHUB_REF_NAME}; falling back to a blank body." >&2
+            echo "::error::No CHANGELOG.md section found for ${GITHUB_REF_NAME} (looked for '## [${VERSION}]')."
+            exit 1
           fi
 
       - name: Create GitHub release

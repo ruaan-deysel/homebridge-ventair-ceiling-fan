@@ -69,6 +69,9 @@ describe('discover', () => {
     const result = await discover(10);
 
     expect(failingSocket.close).toHaveBeenCalled();
+    // The socket that DID bind must be closed too once the scan window elapses —
+    // otherwise every scan leaks a bound UDP port for the life of the process.
+    expect(workingSocket.close).toHaveBeenCalled();
     expect(result).toEqual([decoded]);
   });
 
