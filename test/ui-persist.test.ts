@@ -149,3 +149,32 @@ describe('homebridge-ui persist()', () => {
     expect(homebridge.getPluginConfig).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('homebridge-ui badgeFor()', () => {
+  const badgeForSrc = extractFunction(html, 'function badgeFor(device)');
+
+  /** `badgeFor` builds a node via `el()`; a stub is enough to read back class + text. */
+  function loadBadgeFor(lastScanIds: Set<string> | null) {
+    const el = (_tag: string, attrs: Record<string, string>, text: string) => ({ ...attrs, text });
+    const factory = new Function('el', 'lastScanIds', `${badgeForSrc}\nreturn badgeFor;`);
+    return factory(el, lastScanIds) as (d: { id: string }) => { class: string; text: string };
+  }
+
+  it('shows "Configured" before any scan has run', () => {
+    expect(loadBadgeFor(null)({ id: 'bf0000000000000000000a' }).text).toBe('Configured');
+  });
+
+  it('warns only when a scan that DID see other fans missed this one', () => {
+    const badge = loadBadgeFor(new Set(['bf0000000000000000000b']));
+    expect(badge({ id: 'bf0000000000000000000a' }).text).toBe('Not found on network');
+  });
+
+  it('does not warn when the scan found nothing at all', () => {
+    // A scan that heard zero broadcasts is evidence the scan could not hear — not
+    // evidence that every configured fan is offline. Observed on real hardware: eight
+    // fans, all reachable and controllable over TCP, every one relabelled "Not found on
+    // network" because UDP announcements never reached the host.
+    const badge = loadBadgeFor(new Set());
+    expect(badge({ id: 'bf0000000000000000000a' }).text).toBe('Configured');
+  });
+});

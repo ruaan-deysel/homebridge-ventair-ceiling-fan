@@ -155,7 +155,11 @@
       // No scan run yet, or the fan was seen in the most recent scan: just "Configured".
       // Only a scan that ran and did NOT see this fan gets the warning badge — the fan
       // itself is never touched either way.
-      if (lastScanIds !== null && !lastScanIds.has(device.id)) {
+      // A scan that found NOTHING is excluded: that is evidence the scan could not hear
+      // broadcasts (Docker bridge, AP client isolation, a VLAN that drops them), not
+      // evidence that every configured fan is offline. Warning on all of them at once is
+      // never the useful reading, and it contradicts fans that are working right now.
+      if (lastScanIds !== null && lastScanIds.size > 0 && !lastScanIds.has(device.id)) {
         return el('span', { class: 'badge bg-warning text-dark' }, 'Not found on network');
       }
       return el('span', { class: 'badge bg-success' }, 'Configured');
