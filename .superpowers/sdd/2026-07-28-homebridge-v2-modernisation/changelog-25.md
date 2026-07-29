@@ -43,6 +43,7 @@ and Matter) racing each other.
    swaps in a fresh one (`recycleTransport`), discarding the stuck resolver instead of
    letting it accumulate across repeated timeouts.
 
-Six new/adjusted regression tests across `test/tuyapi.test.ts`, `test/accessory.test.ts`
-and `test/matter.test.ts`; every new/modified test was revert-tested against the
-pre-fix code and confirmed to fail there before being restored.
+Six new regression tests, plus one pre-existing test adjusted, across
+`test/tuyapi.test.ts`, `test/accessory.test.ts` and `test/matter.test.ts`; every
+new/modified test was revert-tested against the pre-fix code and confirmed to fail there
+before being restored.
