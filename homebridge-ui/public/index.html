@@ -11,7 +11,10 @@
   .fan-id { font-family: var(--bs-font-monospace); font-size: .75rem; color: var(--bs-secondary-color); letter-spacing: -.01em; }
   .spacer { flex: 1 1 auto; }
 
-  .fan-meta { display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap; margin-top: .625rem; }
+  .fan-meta { display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap; margin-top: .75rem; }
+  /* Geometry only. Colour comes from Homebridge's own .hb-uix-switch theme rules so the
+     control tracks whatever accent the user has chosen — never restate the colour here. */
+  .fan-toggle { display: inline-block; margin-bottom: 0; font-size: .875rem; line-height: 25px; }
   .fan-key { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
   .fan-key input { max-width: 13rem; }
 
@@ -143,11 +146,14 @@
       return el('span', { class: 'badge bg-success' }, 'Configured');
     }
 
+    // Homebridge ships its own themed control, `.hb-uix-switch`. Its stylesheet colours
+    // the checked state per accent for every theme it offers (orange, red, pink, purple,
+    // deep-purple, indigo, …). Bootstrap's own `.form-switch` does NOT follow the accent —
+    // it reads `--bs-primary`, which Homebridge leaves at Bootstrap's default blue — so a
+    // Bootstrap switch renders blue on a purple install. Use the native control.
     function toggle(device, prop, label) {
       const input = el('input', {
-        class: 'form-check-input',
         type: 'checkbox',
-        role: 'switch',
         onchange: async e => {
           device[prop] = e.target.checked;
           // On a failed save, persist() has already reloaded `platform` to what's
@@ -157,7 +163,11 @@
         },
       });
       input.checked = Boolean(device[prop]);
-      return el('div', { class: 'form-check form-switch' }, [input, el('label', { class: 'form-check-label small' }, label)]);
+      return el('label', { class: 'hb-uix-switch fan-toggle' }, [
+        label,
+        input,
+        el('span', { class: 'hb-uix-slider hb-uix-round' }),
+      ]);
     }
 
     function configuredRow(device) {
