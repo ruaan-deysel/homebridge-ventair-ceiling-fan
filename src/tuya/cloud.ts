@@ -32,6 +32,38 @@ const DEVICE_ID_RE = /^[A-Za-z0-9]{16,26}$/;
 const REQUEST_TIMEOUT_MS = 10_000;
 
 /**
+ * Errors worth re-trying on the alternate address family: the address resolved but the
+ * connection itself never came up, which is exactly what `FALLBACK_AGENT` exists for.
+ * Anything else (a timeout, a TLS failure, a response-stream error) is NOT retried —
+ * retrying a timeout cost the user two full REQUEST_TIMEOUT_MS windows before they saw
+ * any feedback at all, and the second attempt was never going to behave differently.
+ */
+const CONNECT_ERROR_CODES = new Set([
+  'ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'EHOSTUNREACH', 'ENETUNREACH',
+  'ENETDOWN', 'EHOSTDOWN', 'EPIPE', 'EAI_AGAIN', 'ENOTFOUND', 'EADDRNOTAVAIL',
+]);
+
+function isConnectFailure(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === 'string' && CONNECT_ERROR_CODES.has(code);
+}
+
+/** Never let a raw transport error (which may embed request internals) reach the caller. */
+function transportError(error: unknown): Error {
+  if (error instanceof Error && error.name === 'TimeoutError') {
+    return new Error('Tuya API request timed out', { cause: error });
+  }
+  return new Error('Could not reach the Tuya API — check your network connection', { cause: error });
+}
+
+/**
+ * Tuya's token lives for `expire_time` seconds. Re-authenticate this far before it
+ * actually lapses — the token is used by the very next request, and a token that expires
+ * in flight surfaces to the user as a bogus "check your credentials" error.
+ */
+const TOKEN_EXPIRY_MARGIN_MS = 60_000;
+
+/**
  * Node's Happy Eyeballs connection racing (`autoSelectFamily`, on by default since
  * Node 20) tries the IPv6 (AAAA) address alongside the IPv4 one. On a host with no
  * IPv6 route the IPv6 attempt fails instantly with ENETUNREACH, which poisons the
@@ -131,6 +163,7 @@ export class TuyaCloud {
 
   private readonly host: string;
   private token?: string;
+  private tokenExpiresAt = 0;
 
   private sign(payload: string): string {
     return crypto.createHmac('sha256', this.secret).update(payload).digest('hex').toUpperCase();
@@ -157,22 +190,21 @@ export class TuyaCloud {
     let raw: string;
     try {
       ({ statusCode, body: raw } = await this.request(path, headers, AGENT));
-    } catch {
-      // The preferred-family address resolved fine but the CONNECT itself failed
-      // (routing black hole, broken IPv4 path on an otherwise-fine dual-stack host,
-      // etc.) — retry once against the alternate address family rather than failing
-      // outright. See the AGENT/FALLBACK_AGENT comment above.
+    } catch (firstError) {
+      // Only a CONNECT-class failure earns a retry: the preferred-family address resolved
+      // fine but the connection never came up (routing black hole, broken IPv4 path on an
+      // otherwise-fine dual-stack host, etc.), which is precisely the tuya-homebridge#412
+      // case FALLBACK_AGENT exists for. Anything else — a timeout above all — propagates
+      // immediately rather than costing a second full REQUEST_TIMEOUT_MS window.
+      if (!isConnectFailure(firstError)) {
+        throw transportError(firstError);
+      }
       try {
         ({ statusCode, body: raw } = await this.request(path, headers, FALLBACK_AGENT));
       } catch (secondError) {
-        // Never let a raw error (which may embed request internals) bubble up — surface
-        // only whether it was a timeout or some other network failure. The first
-        // attempt's error is discarded deliberately — it's a same-class connection
-        // failure and the retry's own error is the one that matters to the caller.
-        if (secondError instanceof Error && secondError.name === 'TimeoutError') {
-          throw new Error('Tuya API request timed out', { cause: secondError });
-        }
-        throw new Error('Could not reach the Tuya API — check your network connection', { cause: secondError });
+        // The first attempt's error is discarded deliberately — it's a same-class
+        // connection failure and the retry's own error is the one that matters here.
+        throw transportError(secondError);
       }
     }
 
@@ -217,14 +249,32 @@ export class TuyaCloud {
   }
 
   async authenticate(): Promise<void> {
-    const result = await this.call<{ access_token: string }>('/v1.0/token?grant_type=1');
+    // Clear first: `call()` signs with `this.token` when it is set, and the token endpoint
+    // must be signed WITHOUT one — re-authenticating on an expired token would otherwise
+    // sign the refresh with the very token that just lapsed.
+    this.token = undefined;
+    this.tokenExpiresAt = 0;
+    const result = await this.call<{ access_token: string; expire_time?: number }>('/v1.0/token?grant_type=1');
     this.token = result.access_token;
+    // `expire_time` is seconds (Tuya returns 7200). A response without it is treated as
+    // already expired, so the next call re-authenticates rather than reusing it forever.
+    this.tokenExpiresAt = typeof result.expire_time === 'number'
+      ? Date.now() + result.expire_time * 1000 - TOKEN_EXPIRY_MARGIN_MS
+      : 0;
+  }
+
+  /** Re-authenticate a token that has expired (or is about to) before using it. */
+  private async ensureToken(): Promise<void> {
+    if (this.token && Date.now() >= this.tokenExpiresAt) {
+      await this.authenticate();
+    }
   }
 
   async getDevice(id: string): Promise<CloudDevice> {
     if (!DEVICE_ID_RE.test(id)) {
       throw new Error(`Invalid Tuya device ID: "${id}"`);
     }
+    await this.ensureToken();
     const d = await this.call<{ id: string; name: string; local_key: string; ip: string; online: boolean }>(
       `/v1.0/devices/${encodeURIComponent(id)}`,
     );
