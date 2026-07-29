@@ -557,6 +557,157 @@ describe('reconnect supervision', () => {
     // timeouts) and `d.connected` never flips false on a timeout at all.
   });
 
+  it('keeps a buffered external change pending (and recycles the transport) when the settle recheck times out', async () => {
+    // A wall-switch change arrives during a write's settle window and is buffered. The
+    // authoritative recheck that should publish it then times out against a half-open
+    // fan. The buffered change must survive that failure — it is the only record that
+    // something happened — and the timed-out read must recycle the transport just like
+    // any other readback timeout does.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    const received: Record<string, unknown>[] = [];
+    d.onDps(dps => received.push(dps));
+
+    await d.set({ '3': 5 });
+    received.length = 0; // drop the confirmed-write broadcast; not the focus here
+
+    handlers['data']?.[0]?.({ dps: { '3': 2 } }); // buffered, held back
+    expect(received).toHaveLength(0);
+
+    const instancesAtStart = constructorSpy.mock.calls.length;
+    get.mockImplementation(() => new Promise(() => {})); // recheck never comes back
+    await vi.advanceTimersByTimeAsync(1_501); // settle window elapses, recheck starts
+    await vi.advanceTimersByTimeAsync(3_100); // past READBACK_TIMEOUT_MS
+
+    expect(constructorSpy.mock.calls.length).toBe(instancesAtStart + 1);
+    expect(d.connected).toBe(false);
+    expect(received).toHaveLength(0);
+
+    // The buffered change is still pending, so once the device is reachable again the
+    // retry publishes it rather than dropping it on the floor.
+    fire('connected');
+    get.mockImplementation(async () => 2);
+    await vi.advanceTimersByTimeAsync(1_501);
+
+    expect(received).toEqual([{ '3': 2 }]);
+    // fails if reverted: the marker is consumed before the read, so nothing survives the
+    // timeout, the transport is never recycled, and `received` stays empty.
+  });
+
+  it('discards a settle recheck whose datapoint was claimed by a newer write while the read was in flight', async () => {
+    // The settle recheck reads dp 3, and before that read returns the user issues a new
+    // speed command for the same datapoint. The read's result now describes a superseded
+    // state; publishing it would overwrite the newer write's confirmation with an older
+    // value.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    const received: Record<string, unknown>[] = [];
+    d.onDps(dps => received.push(dps));
+
+    await d.set({ '3': 5 });
+    handlers['data']?.[0]?.({ dps: { '3': 2 } }); // buffered → a recheck will be issued
+
+    let releaseRecheck!: (value: unknown) => void;
+    get.mockImplementationOnce(() => new Promise(resolve => {
+      releaseRecheck = resolve;
+    }));
+    await vi.advanceTimersByTimeAsync(1_501); // recheck starts and hangs
+
+    await d.set({ '3': 4 }); // newer write claims dp 3 while the recheck is outstanding
+    releaseRecheck(2); // the stale recheck finally answers with the superseded value
+    await vi.advanceTimersByTimeAsync(0);
+
+    const speeds = received.filter(p => '3' in p).map(p => p['3']);
+    expect(speeds).toEqual([5, 4]);
+    expect(speeds).not.toContain(2);
+    // fails if reverted: the ungated recheck publishes { '3': 2 } after the newer
+    // write's confirmation, leaving every listener showing the superseded value.
+  });
+
+  it('rejects the public get() within the readback timeout instead of hanging on a half-open device', async () => {
+    // Both failure-reconciliation paths (accessory.ts / matter.ts) call get() while
+    // already handling a rejected write. Unbounded, the same unresponsive device that
+    // failed the write leaves the reconciliation pending forever.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    const instancesAtStart = constructorSpy.mock.calls.length;
+    get.mockImplementation(() => new Promise(() => {}));
+
+    const pending = d.get();
+    const assertion = expect(pending).rejects.toThrow(/timed out/i);
+    await vi.advanceTimersByTimeAsync(3_100);
+    await assertion;
+
+    expect(constructorSpy.mock.calls.length).toBe(instancesAtStart + 1);
+    // fails if reverted: `pending` never settles, so the assertion above times out.
+  });
+
+  it('broadcasts a confirmed value that was withheld for a queued successor when that successor fails', async () => {
+    // The in-flight write confirms dp 3 = 5, but its broadcast is deliberately skipped
+    // because a newer write for dp 3 is already queued behind it. If that successor then
+    // fails, 5 is the last value the fan is known to hold — and starting the successor
+    // already cleared the settle timer and buffered echo, so nothing else would ever
+    // publish it. The listener that did not issue the write must not stay stale.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    const hapSeen: Record<string, unknown>[] = [];
+    const matterSeen: Record<string, unknown>[] = [];
+    d.onDps(dps => hapSeen.push(dps));
+    d.onDps(dps => matterSeen.push(dps));
+
+    const first = d.set({ '3': 5 }); // in flight; confirms, but its broadcast is withheld
+    const second = d.set({ '3': 2 }); // queued successor, which then fails on the wire
+    set.mockImplementation(async () => {
+      throw new Error('device unreachable');
+    });
+
+    await expect(first).resolves.toBeUndefined();
+    await expect(second).rejects.toThrow(/unreachable/i);
+
+    expect(hapSeen).toEqual([{ '3': 5 }]);
+    expect(matterSeen).toEqual([{ '3': 5 }]);
+    // fails if reverted: both arrays stay empty — the confirmed value is withheld for a
+    // successor that never lands, and nothing republishes it.
+  });
+
+  it('survives a throwing dps listener: the write still succeeds and the other listener still gets the value', async () => {
+    // HAP and Matter both subscribe to the same transport. A direct forEach over the
+    // listeners let one consumer's throw abort the loop AND escape into the write's own
+    // catch, turning a successful write into a reported failure.
+    const d = new TuyapiDevice(opts, log);
+    await d.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    fire('connected');
+
+    const healthySeen: Record<string, unknown>[] = [];
+    d.onDps(() => {
+      throw new Error('listener exploded');
+    });
+    d.onDps(dps => healthySeen.push(dps));
+
+    await expect(d.set({ '3': 4 })).resolves.toBeUndefined();
+    expect(healthySeen).toEqual([{ '3': 4 }]);
+
+    // The same isolation applies to a plain inbound echo for an unwritten datapoint.
+    await vi.advanceTimersByTimeAsync(1_501);
+    handlers['data']?.[0]?.({ dps: { '1': true } });
+    expect(healthySeen).toEqual([{ '3': 4 }, { '1': true }]);
+    // fails if reverted: the first listener's throw aborts the loop, so `healthySeen`
+    // stays empty and d.set() rejects instead of resolving.
+  });
+
   it('onDps returns a disposer that detaches the listener', async () => {
     // Nothing replaces an accessory/bridge on a live transport today (discovery runs
     // once), but a subscriber that IS replaced in the future must be able to detach —

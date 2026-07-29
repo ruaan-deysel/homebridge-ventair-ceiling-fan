@@ -76,6 +76,21 @@ export class TuyapiDevice implements TuyaDevice {
    * authoritative recheck `armSettleTimer` schedules once the window ends. */
   private readonly suppressedEcho = new Map<string, DpValue>();
   private readonly pendingSettleTimers = new Map<string, NodeJS.Timeout>();
+  /**
+   * Bumped once per datapoint at the top of that datapoint's turn in `writeOnce`. A
+   * read that started before the bump is, by definition, no longer describing the write
+   * that owns the datapoint now — see `resolveSettle`, which captures this before its
+   * `await` and discards the result if it changed while the read was in flight.
+   */
+  private readonly dpGeneration = new Map<string, number>();
+  /**
+   * Value a write genuinely confirmed but deliberately did NOT broadcast, because a
+   * newer write for the same datapoint was already queued behind it (see `writeOnce`).
+   * If that successor then fails, this is the last value the fan is actually known to
+   * hold, so it is broadcast then instead of leaving the non-writing listener stale.
+   * Cleared as soon as any value for the datapoint is broadcast.
+   */
+  private readonly unbroadcastConfirmed = new Map<string, DpValue>();
 
   private readonly forwardDps = (data: unknown) => {
     const dps = (data as { dps?: Record<string, DpValue> } | undefined)?.dps;
@@ -98,9 +113,25 @@ export class TuyapiDevice implements TuyaDevice {
       filtered[dp] = value;
     }
     if (Object.keys(filtered).length > 0) {
-      this.dpsListeners.forEach(l => l(filtered));
+      this.emit(filtered);
     }
   };
+
+  /**
+   * Delivers to every listener, isolating each from the others. HAP and Matter both
+   * subscribe here; a throw from one of them used to abort the loop (the rest never saw
+   * the update) and, on the write-confirmation path, escaped into the write's own catch
+   * so a SUCCESSFUL write was reported as failed and rolled back.
+   */
+  private emit(dps: Record<string, DpValue>): void {
+    for (const listener of this.dpsListeners) {
+      try {
+        listener(dps);
+      } catch (error) {
+        this.log.debug(`[${this.opts.id}] dps listener threw:`, error instanceof Error ? error.message : error);
+      }
+    }
+  }
 
   constructor(private readonly opts: TuyapiOptions, private readonly log: Logging) {
     this.device = this.createDevice();
@@ -379,6 +410,25 @@ export class TuyapiDevice implements TuyaDevice {
     }
   }
 
+  /**
+   * The only way this class reads from the device. Every read is bounded — an unbounded
+   * one against a half-open fan (connected, not replying) hangs whatever is awaiting it
+   * forever, which for the failure-reconciliation paths in `accessory.ts`/`matter.ts`
+   * means an ambiguous optimistic state that is never resolved either way. A timeout also
+   * recycles the transport, because tuyapi 7.7.1 leaves the abandoned request pending
+   * inside it with no way to cancel — see `recycleTransport`.
+   */
+  private async boundedRead(query: { dps?: number; schema?: boolean }): Promise<unknown> {
+    try {
+      return await withTimeout(this.device.get(query) as Promise<unknown>, READBACK_TIMEOUT_MS);
+    } catch (error) {
+      if (error instanceof ReadbackTimeoutError) {
+        this.recycleTransport();
+      }
+      throw error;
+    }
+  }
+
   private async writeOnce(dps: Record<string, DpValue>): Promise<{ confirmed: Set<string>; error: unknown }> {
     const confirmed = new Set<string>();
     for (const [dp, value] of Object.entries(dps)) {
@@ -389,6 +439,9 @@ export class TuyapiDevice implements TuyaDevice {
       // waiting for the readback — an echo racing in between the send and the
       // readback is just as stale as one arriving during the readback itself.
       this.echoSuppressedUntil.set(dp, Infinity);
+      // This write now owns the datapoint: any read already in flight for it describes
+      // a superseded write and must not be published (see `resolveSettle`).
+      this.dpGeneration.set(dp, (this.dpGeneration.get(dp) ?? 0) + 1);
       const staleTimer = this.pendingSettleTimers.get(dp);
       if (staleTimer) {
         clearTimeout(staleTimer);
@@ -409,23 +462,35 @@ export class TuyapiDevice implements TuyaDevice {
         // shortly, and publishing this one first would flicker listeners through a
         // value already obsolete by the time they see it.
         if (this.pendingWrite?.dps[dp] === undefined) {
-          this.dpsListeners.forEach(l => l({ [dp]: value }));
+          this.unbroadcastConfirmed.delete(dp);
+          this.emit({ [dp]: value });
+        } else {
+          this.unbroadcastConfirmed.set(dp, value);
         }
         this.armSettleTimer(dp);
       } catch (error) {
         // Outcome unknown — do not keep trusting our own state over the device's.
         this.echoSuppressedUntil.delete(dp);
         this.suppressedEcho.delete(dp);
+        // Starting this write cleared its predecessor's settle timer and buffered echo,
+        // so if the predecessor confirmed a value that was withheld only because THIS
+        // write was queued behind it, nothing else would ever republish it. It is the
+        // last value the fan is known to have applied — broadcast it now.
+        const withheld = this.unbroadcastConfirmed.get(dp);
+        if (withheld !== undefined) {
+          this.unbroadcastConfirmed.delete(dp);
+          this.emit({ [dp]: withheld });
+        }
         return { confirmed, error };
       }
     }
     return { confirmed, error: undefined };
   }
 
-  private armSettleTimer(dp: string): void {
+  private armSettleTimer(dp: string, attempt = 0): void {
     const timer = setTimeout(() => {
       this.pendingSettleTimers.delete(dp);
-      void this.resolveSettle(dp);
+      void this.resolveSettle(dp, attempt);
     }, ECHO_SETTLE_MS);
     timer.unref?.();
     this.pendingSettleTimers.set(dp, timer);
@@ -440,19 +505,36 @@ export class TuyapiDevice implements TuyaDevice {
    * Skipped entirely when nothing happened during the window, so a quiet dp does not pay
    * for an extra read it doesn't need.
    */
-  private async resolveSettle(dp: string): Promise<void> {
-    const hadActivity = this.suppressedEcho.delete(dp);
-    if (!hadActivity || !this.connectedState) {
+  private async resolveSettle(dp: string, attempt = 0): Promise<void> {
+    // Read the buffered marker WITHOUT consuming it: if the read below fails, the
+    // external change it represents must still be pending, not silently discarded.
+    if (!this.suppressedEcho.has(dp) || !this.connectedState) {
       return;
     }
+    const generation = this.dpGeneration.get(dp);
     try {
-      const actual = await withTimeout(this.device.get({ dps: Number(dp) }) as Promise<unknown>, READBACK_TIMEOUT_MS);
-      this.dpsListeners.forEach(l => l({ [dp]: actual as DpValue }));
+      const actual = await this.boundedRead({ dps: Number(dp) });
+      if (this.dpGeneration.get(dp) !== generation) {
+        // A newer write for this dp started while the read was in flight and now owns
+        // the datapoint; this result describes a superseded state. Discard it silently —
+        // the newer write publishes its own confirmation.
+        return;
+      }
+      this.suppressedEcho.delete(dp);
+      this.unbroadcastConfirmed.delete(dp);
+      this.emit({ [dp]: actual as DpValue });
     } catch (error) {
       this.log.debug(
         `[${this.opts.id}] authoritative recheck of dp ${dp} after echo suppression failed:`,
         error instanceof Error ? error.message : error,
       );
+      // ponytail: exactly one retry. The buffered change deserves a second chance (a
+      // readback timeout also recycles the transport, so the retry runs against a fresh
+      // one), but retrying forever would poll a permanently sick device every 1.5s. If
+      // the retry also fails, a reconnect's full `get()` refresh is the backstop.
+      if (attempt === 0 && this.suppressedEcho.has(dp)) {
+        this.armSettleTimer(dp, attempt + 1);
+      }
     }
   }
 
@@ -467,17 +549,8 @@ export class TuyapiDevice implements TuyaDevice {
     }
     let actual: unknown;
     try {
-      actual = await withTimeout(
-        this.device.get({ dps: Number(dp) }) as Promise<unknown>,
-        READBACK_TIMEOUT_MS,
-      );
+      actual = await this.boundedRead({ dps: Number(dp) });
     } catch (error) {
-      if (error instanceof ReadbackTimeoutError) {
-        // tuyapi's own get() is still pending inside the transport with no way for us
-        // to cancel it — see `recycleTransport`. Recreate rather than let it and every
-        // future timeout each leave one more of these behind.
-        this.recycleTransport();
-      }
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`[${this.opts.id}] write to dp ${dp} could not be confirmed: ${message}`, { cause: error });
     }
@@ -487,7 +560,10 @@ export class TuyapiDevice implements TuyaDevice {
   }
 
   async get(): Promise<Record<string, DpValue>> {
-    const result = await this.device.get({ schema: true });
+    // Bounded like every other read: both failure-reconciliation paths call this while
+    // already handling a rejected write, so the same unresponsive device that failed the
+    // write must not be able to hang the reconciliation too.
+    const result = await this.boundedRead({ schema: true });
     if (result && typeof result === 'object' && 'dps' in result) {
       return (result as { dps: Record<string, DpValue> }).dps;
     }
