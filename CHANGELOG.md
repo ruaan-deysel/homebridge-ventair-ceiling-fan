@@ -5,10 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.0] - 2026-07-29
 
 ### Removed
 
+- **BREAKING:** Matter support. It was opt-in and Homebridge's own Matter support is
+  still beta; the fans are exposed through HomeKit normally. Removing it also deleted a
+  second optimistic-state implementation that had to be kept in lockstep with the
+  HomeKit one, which was the source of several state-divergence defects.
 - **BREAKING:** `SwingMode` no longer carries the fan mode. Only `Normal` and `Sleep` are
   reachable on the real hardware — writing anything else, including Tuya's published
   `nature`/`smart` values, lands on `Sleep` — and there is no manual mode for

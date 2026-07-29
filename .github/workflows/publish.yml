@@ -1,27 +1,31 @@
 name: Publish
 
-# Publishes to npm via Trusted Publishing (OIDC) — no NPM_TOKEN secret is involved.
-# npm mints a short-lived credential from this workflow's OIDC identity, which is why
-# the filename, the repository and the `release` environment below must keep matching
-# the trusted publisher registered on the npm package.
+# The whole release: tag, GitHub release, and npm publish, driven by ONE input —
+# the `version` field in package.json. Bump it on main and push; everything else follows.
 #
-# Runs only when a GitHub release is published, so tagging alone does not publish:
-# Release.yml creates the release from CHANGELOG.md, and publishing stays a deliberate act.
+# Deliberately one workflow rather than a release job that triggers a publish job:
+# a release created with GITHUB_TOKEN does not start another workflow run (GitHub
+# suppresses that to prevent recursion), so an `on: release` publish would silently
+# never fire. Keeping it in one file also satisfies npm Trusted Publishing, which is
+# bound to this exact filename and the `release` environment.
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
+    paths: ['package.json']
   workflow_dispatch:
 
 permissions:
-  contents: read
-  id-token: write # required: this is what npm exchanges for a publish credential
+  contents: write # create the tag and the GitHub release
+  id-token: write # npm exchanges this for a short-lived publish credential
 
 jobs:
-  npm-publish:
+  release:
     runs-on: ubuntu-latest
     environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # needs full history so existing tags are visible
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -32,24 +36,75 @@ jobs:
       # Trusted publishing needs npm 11.5.1+; Node 24 ships an older npm.
       - run: npm install -g npm@latest
 
-      - run: npm ci
-
-      # Re-run the full gate here rather than trusting the CI run on the commit: this is
-      # the last point before the package is public and immutable.
-      - run: npm run lint
-      - run: npm run build
-      - run: npx vitest run
-
-      # Refuse to publish a package whose version does not match the release tag, which
-      # would otherwise silently ship the wrong version under the right release notes.
-      - name: Verify package version matches the release tag
-        if: github.event_name == 'release'
+      - name: Read the version and decide whether there is anything to do
+        id: check
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          PKG="$(node -p "require('./package.json').version")"
-          if [ "$TAG" != "$PKG" ]; then
-            echo "Release tag ($TAG) does not match package.json version ($PKG)." >&2
+          VERSION="$(node -p "require('./package.json').version")"
+          NAME="$(node -p "require('./package.json').name")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Two independent guards, so re-running this workflow — or pushing an
+          # unrelated package.json edit — is a no-op rather than a failure.
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "Tag v$VERSION already exists; nothing to release."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "$NAME@$VERSION is already on npm; nothing to publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - run: npm ci
+        if: steps.check.outputs.publish == 'true'
+
+      # The full gate, re-run here rather than trusted from the CI run on this commit:
+      # this is the last point before the package becomes public and immutable.
+      - run: npm run lint
+        if: steps.check.outputs.publish == 'true'
+      - run: npm run build
+        if: steps.check.outputs.publish == 'true'
+      - run: npm test
+        if: steps.check.outputs.publish == 'true'
+
+      - name: Extract release notes from CHANGELOG.md
+        if: steps.check.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+
+          # Shipping a release with an empty body is worse than not shipping it: the tag
+          # is already public and the notes cannot be regenerated from anything else.
+          if [ ! -s release-notes.md ]; then
+            echo "::error::No CHANGELOG.md section found for $VERSION (looked for '## [$VERSION]')."
             exit 1
           fi
 
-      - run: npm publish --provenance --access public
+      - name: Tag the release commit
+        if: steps.check.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "v$VERSION"
+          git push origin "v$VERSION"
+
+      - name: Create the GitHub release
+        if: steps.check.outputs.publish == 'true'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: v${{ steps.check.outputs.version }}
+          name: v${{ steps.check.outputs.version }}
+          body_path: release-notes.md
+
+      # Publishes last: a failure here leaves the tag and release in place to retry
+      # against, whereas publishing first would put an unannounced package on npm.
+      - name: Publish to npm
+        if: steps.check.outputs.publish == 'true'
+        run: npm publish --provenance --access public

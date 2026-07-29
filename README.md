@@ -2,7 +2,7 @@
   <img src="branding/icon.png" alt="" width="120">
 </p>
 
-# Homebridge Ventair Skyfan DC Ceiling Fan
+# Ventair Skyfan DC
 
 Control Ventair Skyfan DC ceiling fans from HomeKit, over your local network.
 
@@ -82,6 +82,24 @@ optional **Sleep** switch (`exposeModeSwitches`).
 Also breaking: Node 18/20 are no longer supported, and `hasLight` now defaults to `false`.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full list.
+
+## Releasing
+
+The version in `package.json` is the single input. Bump it on `main`, add a matching
+`## [x.y.z]` section to `CHANGELOG.md`, and push:
+
+```bash
+npm version patch   # or minor / major — writes package.json and commits
+git push origin main
+```
+
+`.github/workflows/publish.yml` then runs the full gate, tags `vx.y.z`, creates the
+GitHub release from that CHANGELOG section, and publishes to npm via Trusted Publishing
+(OIDC — there is no npm token in this repo). Re-running it, or pushing an unrelated
+`package.json` change, is a no-op: it skips when the tag already exists or the version is
+already on npm.
+
+A missing CHANGELOG section fails the run *before* anything is tagged or published.
 
 ## Homebridge verified-plugin compliance
 

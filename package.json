@@ -1,6 +1,6 @@
 {
   "private": false,
-  "displayName": "Homebridge Ventair Skyfan DC Ceiling Fan",
+  "displayName": "Ventair Skyfan DC",
   "name": "homebridge-ventair-ceiling-fan",
   "version": "2.0.0",
   "type": "module",
