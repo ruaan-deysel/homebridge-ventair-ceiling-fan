@@ -147,10 +147,10 @@ export class TuyapiDevice implements TuyaDevice {
   };
 
   /**
-   * Delivers to every listener, isolating each from the others. HAP and Matter both
-   * subscribe here; a throw from one of them used to abort the loop (the rest never saw
-   * the update) and, on the write-confirmation path, escaped into the write's own catch
-   * so a SUCCESSFUL write was reported as failed and rolled back.
+   * Delivers to every listener, isolating each from the others. A throw from one used
+   * to abort the loop (the rest never saw the update) and, on the write-confirmation
+   * path, escaped into the write's own catch so a SUCCESSFUL write was reported as
+   * failed and rolled back.
    */
   private emit(dps: Record<string, DpValue>): void {
     for (const listener of this.dpsListeners) {
@@ -458,7 +458,7 @@ export class TuyapiDevice implements TuyaDevice {
   /**
    * The only way this class reads from the device. Every read is bounded — an unbounded
    * one against a half-open fan (connected, not replying) hangs whatever is awaiting it
-   * forever, which for the failure-reconciliation paths in `accessory.ts`/`matter.ts`
+   * forever, which for the failure-reconciliation path in `accessory.ts`
    * means an ambiguous optimistic state that is never resolved either way. A timeout also
    * recycles the transport, because tuyapi 7.7.1 leaves the abandoned request pending
    * inside it with no way to cancel — see `recycleTransport`.
@@ -515,10 +515,9 @@ export class TuyapiDevice implements TuyaDevice {
         confirmed.add(dp);
         this.echoSuppressedUntil.set(dp, Date.now() + ECHO_SETTLE_MS);
         // Publish the confirmed value to every listener now, rather than waiting on
-        // an echo that suppression would hold back anyway — this is what lets HAP and
-        // Matter (two independent consumers of the same transport) converge on the
-        // same state immediately after either one writes, instead of only the writer
-        // knowing about it. Skipped when a newer write for this dp is already queued
+        // an echo that suppression would hold back anyway, so every consumer of this
+        // transport converges on the same state immediately after a write instead of
+        // only the writer knowing about it. Skipped when a newer write for this dp is queued
         // behind this one: that queued write's own confirmation supersedes this value
         // shortly, and publishing this one first would flicker listeners through a
         // value already obsolete by the time they see it.

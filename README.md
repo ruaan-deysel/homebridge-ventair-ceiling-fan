@@ -11,7 +11,6 @@ Control Ventair Skyfan DC ceiling fans from HomeKit, over your local network.
 - Set rotation direction
 - Sleep mode switch (optional)
 - Light on/off and brightness (see [Light support](#light-support))
-- Optional Matter exposure (see [Matter](#matter-beta-opt-in))
 
 > **Unofficial plugin.** Not affiliated with, endorsed by, or supported by Ventair.
 > "Ventair" and "Skyfan" are trademarks of their respective owner. This project is an
@@ -61,19 +60,6 @@ network at startup, so a fan that moves to a new DHCP address keeps working.
 These devices accept only **one local connection at a time**. If another integration
 (Home Assistant, `tuya-local`, another Homebridge plugin) is already connected to a fan,
 this plugin cannot also control it, and vice versa.
-
-## Matter (beta, opt-in)
-
-Each fan can also be exposed as a Matter device, so non-Apple ecosystems can control it
-alongside HomeKit. This requires Matter to already be enabled on your Homebridge bridge
-(`bridge.matter` in your Homebridge config) — Matter support in Homebridge is itself beta.
-
-Enable it per-fan with the "Expose to Matter" option in the plugin settings
-(`exposeMatter`, off by default). If your bridge doesn't have Matter enabled, this option
-has no effect.
-
-**Known limitation:** Matter's `FanControl` cluster has no rotation-direction attribute, so
-reverse/forward rotation is only available through HomeKit, not through Matter.
 
 ## Light support
 

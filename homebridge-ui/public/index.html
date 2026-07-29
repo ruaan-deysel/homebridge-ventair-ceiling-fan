@@ -273,7 +273,6 @@
           keySection,
           toggle(device, 'hasLight', 'Light'),
           toggle(device, 'exposeModeSwitches', 'Sleep switch'),
-          toggle(device, 'exposeMatter', 'Matter'),
         ]),
         el('details', { class: 'fan-adv' }, [
           el('summary', {}, 'Advanced'),
@@ -298,7 +297,6 @@
             version: info.version,
             hasLight: false,
             exposeModeSwitches: false,
-            exposeMatter: false,
           });
           await persist(`Added fan ${id.slice(-4)}`);
           renderAll();

@@ -13,9 +13,6 @@ export const DeviceSchema = z.object({
   name: z.string().min(1, 'Device name cannot be empty'),
   hasLight: z.boolean().default(false),
   exposeModeSwitches: z.boolean().default(false),
-  // Matter is beta in Homebridge and must be enabled on the bridge first — most users'
-  // bridges won't have it configured, so this stays off unless explicitly turned on.
-  exposeMatter: z.boolean().default(false),
   ip: z.ipv4('Not a valid IPv4 address').optional(),
   // Deliberately no `.default('3.3')`: a defaulted value is indistinguishable from an
   // explicitly configured one, which made a discovered 3.4/3.5 fan unreachable because

@@ -210,7 +210,7 @@ describe('reconnect supervision', () => {
     // tuyapi's set() always resolves with shouldWaitForResponse: false (it only
     // rejects on send failure when it's waiting for a reply) — so without this
     // guard a write issued while offline would resolve as if it succeeded,
-    // leaving HomeKit/Matter believing a command reached hardware that never
+    // leaving HomeKit believing a command reached hardware that never
     // saw it. See the comment on TuyapiDevice.set().
     const d = new TuyapiDevice(opts, log);
     expect(d.connected).toBe(false);
@@ -489,7 +489,7 @@ describe('reconnect supervision', () => {
 
     await d.set({ '3': 5 });
     // The confirmed write itself is published immediately — see the dedicated
-    // HAP/Matter convergence test below. Not the focus here; clear it out.
+    // multi-listener convergence test below. Not the focus here; clear it out.
     expect(received).toEqual([{ '3': 5 }]);
     received.length = 0;
 
@@ -503,8 +503,8 @@ describe('reconnect supervision', () => {
     expect(get).not.toHaveBeenCalled();
   });
 
-  it('publishes a confirmed write to every listener immediately, so HAP and Matter converge without waiting on a suppressed echo', async () => {
-    // Two independent consumers (HAP's CeilingFanAccessory and MatterFanBridge) both
+  it('publishes a confirmed write to every listener immediately, so a second listener converges without waiting on a suppressed echo', async () => {
+    // Two independent consumers of the same transport both
     // subscribe via onDps on the same shared transport. Before this fix, a write's own
     // confirming readback was never published — it only ever reached listeners as an
     // echo, and that echo was suppressed by the very write that produced it. So the
@@ -515,15 +515,15 @@ describe('reconnect supervision', () => {
     fire('connected');
 
     const hapSeen: Record<string, unknown>[] = [];
-    const matterSeen: Record<string, unknown>[] = [];
+    const observerSeen: Record<string, unknown>[] = [];
     d.onDps(dps => hapSeen.push(dps));
-    d.onDps(dps => matterSeen.push(dps));
+    d.onDps(dps => observerSeen.push(dps));
 
-    // Simulates HAP issuing the write; Matter never calls set() itself.
+    // Simulates one consumer issuing the write; the observer never calls set() itself.
     await d.set({ '3': 4 });
 
     expect(hapSeen).toEqual([{ '3': 4 }]);
-    expect(matterSeen).toEqual([{ '3': 4 }]);
+    expect(observerSeen).toEqual([{ '3': 4 }]);
     // fails if reverted: without the immediate broadcast, both arrays stay empty —
     // the confirming readback is filtered out by echo suppression before either
     // listener ever sees it.
@@ -718,7 +718,7 @@ describe('reconnect supervision', () => {
   });
 
   it('rejects the public get() within the readback timeout instead of hanging on a half-open device', async () => {
-    // Both failure-reconciliation paths (accessory.ts / matter.ts) call get() while
+    // The failure-reconciliation path in accessory.ts calls get() while
     // already handling a rejected write. Unbounded, the same unresponsive device that
     // failed the write leaves the reconciliation pending forever.
     const d = new TuyapiDevice(opts, log);
@@ -750,9 +750,9 @@ describe('reconnect supervision', () => {
     fire('connected');
 
     const hapSeen: Record<string, unknown>[] = [];
-    const matterSeen: Record<string, unknown>[] = [];
+    const observerSeen: Record<string, unknown>[] = [];
     d.onDps(dps => hapSeen.push(dps));
-    d.onDps(dps => matterSeen.push(dps));
+    d.onDps(dps => observerSeen.push(dps));
 
     const first = d.set({ '3': 5 }); // in flight; confirms, but its broadcast is withheld
     const second = d.set({ '3': 2 }); // queued successor, which then fails on the wire
@@ -764,13 +764,13 @@ describe('reconnect supervision', () => {
     await expect(second).rejects.toThrow(/unreachable/i);
 
     expect(hapSeen).toEqual([{ '3': 5 }]);
-    expect(matterSeen).toEqual([{ '3': 5 }]);
+    expect(observerSeen).toEqual([{ '3': 5 }]);
     // fails if reverted: both arrays stay empty — the confirmed value is withheld for a
     // successor that never lands, and nothing republishes it.
   });
 
   it('survives a throwing dps listener: the write still succeeds and the other listener still gets the value', async () => {
-    // HAP and Matter both subscribe to the same transport. A direct forEach over the
+    // Several consumers can subscribe to the same transport. A direct forEach over the
     // listeners let one consumer's throw abort the loop AND escape into the write's own
     // catch, turning a successful write into a reported failure.
     const d = new TuyapiDevice(opts, log);

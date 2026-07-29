@@ -26,11 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message and skipped, so one mistyped key no longer prevents the whole platform loading.
 - Optional `Sleep` switch per fan (`exposeModeSwitches`): on writes `Sleep`, off writes
   `Normal`.
-- Opt-in Matter exposure per fan (`exposeMatter`, default `false`). Requires Matter to be
-  enabled on the Homebridge bridge. Registers a `Fan` device with `onOff` and `fanControl`
-  clusters, wires the on/off, percent-setting and fan-mode handlers, and pushes
-  device-initiated changes back to Matter. Cached Matter accessories are tracked across
-  restarts and stale ones unregistered, mirroring the HomeKit path.
 - Vitest test suite and GitHub Actions CI across Node 22 and 24.
 
 ### Changed
@@ -58,6 +53,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Writes are confirmed from the fan's own state push rather than a polled readback. Both
+  the per-datapoint and full-schema queries keep reporting a datapoint's previous value
+  for seconds after a write, so every successful write was reported to HomeKit as a
+  communication failure. Verified on eight fans: zero write failures where the previous
+  build failed every write.
+- A device whose config entry fails validation is no longer unregistered from HomeKit.
+  A mistyped key removed the accessory along with its room, scenes and automations.
+- Device IDs are no longer required to be hexadecimal. Real Tuya IDs are alphanumeric,
+  and affected fans were silently dropped at startup.
+- Duplicate device IDs in config are rejected instead of producing duplicate accessories.
+- A protocol version discovered over UDP is now used. A 3.4/3.5 fan was constructed as
+  3.3 and could never connect.
+- A UDP socket error during discovery can no longer crash Homebridge.
+- `disconnect()` settles pending writes instead of leaving callers awaiting forever.
+
 - Fixed a reconnect storm. The `error` and `disconnected` handlers both called `connect()`
   with no in-flight guard and no backoff, so a single failure could spawn overlapping retry
   loops. Retries are now serialised with exponential backoff and jitter, capped at 60s.
@@ -80,5 +90,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Light support is **untested**. No fan available during this work had a light, so the
   brightness scale in particular is unverified.
-- Matter's `FanControl` cluster has no rotation-direction attribute in the version exposed
-  by Homebridge, so reverse rotation stays HomeKit-only.

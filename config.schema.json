@@ -3,7 +3,7 @@
   "pluginType": "platform",
   "singular": true,
   "customUi": true,
-  "headerDisplay": "Control Ventair Skyfan DC ceiling fans locally over your network. Your configured fans are listed below — scan to find more, or paste a local key directly into any fan.",
+  "headerDisplay": "Control Ventair Skyfan DC ceiling fans locally over your network. Your configured fans are listed below \u2014 scan to find more, or paste a local key directly into any fan.",
   "schema": {
     "type": "object",
     "properties": {
@@ -52,12 +52,6 @@
               "default": false,
               "description": "Adds Nature, Sleep and Smart switches to this fan in the Home app."
             },
-            "exposeMatter": {
-              "type": "boolean",
-              "title": "Expose to Matter",
-              "default": false,
-              "description": "Also expose this fan as a Matter device, for non-Apple ecosystems. Matter is beta in Homebridge — enable Matter on this bridge first, or this has no effect."
-            },
             "ip": {
               "type": "string",
               "title": "IP Address",
@@ -70,11 +64,36 @@
               "required": false,
               "description": "Leave blank to use the version the fan announces during discovery (usually 3.3).",
               "oneOf": [
-                { "title": "3.1", "enum": ["3.1"] },
-                { "title": "3.2", "enum": ["3.2"] },
-                { "title": "3.3", "enum": ["3.3"] },
-                { "title": "3.4", "enum": ["3.4"] },
-                { "title": "3.5", "enum": ["3.5"] }
+                {
+                  "title": "3.1",
+                  "enum": [
+                    "3.1"
+                  ]
+                },
+                {
+                  "title": "3.2",
+                  "enum": [
+                    "3.2"
+                  ]
+                },
+                {
+                  "title": "3.3",
+                  "enum": [
+                    "3.3"
+                  ]
+                },
+                {
+                  "title": "3.4",
+                  "enum": [
+                    "3.4"
+                  ]
+                },
+                {
+                  "title": "3.5",
+                  "enum": [
+                    "3.5"
+                  ]
+                }
               ]
             }
           }
@@ -83,7 +102,9 @@
     }
   },
   "layout": [
-    { "key": "name" },
+    {
+      "key": "name"
+    },
     {
       "key": "devices",
       "type": "array",
@@ -94,13 +115,15 @@
         "devices[].key",
         "devices[].hasLight",
         "devices[].exposeModeSwitches",
-        "devices[].exposeMatter",
         {
           "type": "fieldset",
           "title": "Advanced",
           "expandable": true,
           "expanded": false,
-          "items": ["devices[].ip", "devices[].version"]
+          "items": [
+            "devices[].ip",
+            "devices[].version"
+          ]
         }
       ]
     }

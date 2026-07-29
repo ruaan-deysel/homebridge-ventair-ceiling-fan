@@ -1,8 +1,7 @@
-import type { API, Characteristic, DynamicPlatformPlugin, Logging, MatterAccessory, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
+import type { API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
 
 import { CeilingFanAccessory } from './accessory.js';
 import { configuredDeviceIds, parseDevices, type VentairDevice } from './config.js';
-import { MatterFanBridge, matterUuid } from './matter.js';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
 import type { DiscoveredDevice } from './tuya/discovery.js';
 import { discover } from './tuya/discovery.js';
@@ -13,7 +12,6 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
   public readonly Characteristic: typeof Characteristic;
 
   public readonly accessories: Map<string, PlatformAccessory> = new Map();
-  public readonly matterAccessories: Map<string, MatterAccessory> = new Map();
   private readonly devices: VentairDevice[];
   /** IDs from the RAW config — see `removeStaleAccessories`. */
   private readonly configuredIds: string[];
@@ -43,32 +41,7 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
     this.accessories.set(accessory.UUID, accessory);
   }
 
-  /** The Matter twin of `configureAccessory` — tracks cached Matter accessories on startup. */
-  configureMatterAccessory(accessory: MatterAccessory): void {
-    this.log.info('Loading Matter accessory from cache:', accessory.displayName);
-    this.matterAccessories.set(accessory.UUID, accessory);
-  }
-
   async discoverDevices(): Promise<void> {
-    // Computed from valid configuration BEFORE any setup is attempted — never from
-    // "which UUIDs made it through registerMatter() successfully". A Matter UUID that
-    // enters this set is preserved by removeStaleMatterAccessories() below even if this
-    // device's setup rejects (transient API-readiness hiccup, startup race, etc.). The
-    // previous version only recorded a UUID as discovered AFTER registerMatter()
-    // succeeded, so a transient failure on a configured, cached Matter fan fell through
-    // to the "not discovered this run" bucket and removeStaleMatterAccessories()
-    // permanently unregistered it — destroying the user's cached Matter endpoint state
-    // for what was often just a one-off startup error.
-    const parsedIds = new Set(this.devices.map(d => d.id));
-    const desiredMatterUUIDs = [
-      ...this.devices.filter(d => d.exposeMatter).map(d => matterUuid(d.id)),
-      // An entry that failed validation is still in the config, and its `exposeMatter`
-      // value is unknowable (that's what failing validation means) — so its Matter UUID
-      // is preserved rather than unregistered. Deleting a live Matter endpoint over a
-      // mistyped key is exactly the HAP-side bug removeStaleAccessories() now avoids.
-      ...this.configuredIds.filter(id => !parsedIds.has(id)).map(matterUuid),
-    ];
-
     // No discovery/connection attempt when nothing is configured, but stale cleanup
     // below must still run — otherwise clearing `devices` leaves dead tiles in HomeKit
     // forever.
@@ -97,7 +70,6 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
     }
 
     this.removeStaleAccessories();
-    await this.removeStaleMatterAccessories(desiredMatterUUIDs);
   }
 
   private async setupDevice(device: VentairDevice, uuid: string, addresses: Map<string, DiscoveredDevice>): Promise<void> {
@@ -128,43 +100,6 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
     }
 
-    if (device.exposeMatter) {
-      await this.registerMatter(device, transport);
-    }
-  }
-
-  /**
-   * Matter is beta and off by default — `api.matter` throws if accessed on a bridge
-   * without Matter configured, so both `isMatterEnabled()` and optional chaining guard
-   * every access.
-   */
-  private async registerMatter(device: VentairDevice, transport: TuyapiDevice): Promise<void> {
-    if (!this.api.isMatterEnabled() || !this.api.matter) {
-      this.log.warn(`Matter requested for "${device.name}" but Matter is not enabled on this bridge; skipping.`);
-      return;
-    }
-
-    const hapUuid = this.api.hap.uuid.generate(device.id);
-    const bridge = new MatterFanBridge(this.api.matter, device, hapUuid, transport, this.log);
-    const accessory = bridge.buildAccessory();
-
-    // Always (re)register, even when `configureMatterAccessory` already restored this
-    // UUID into `matterAccessories` from the on-disk cache. That restore path passes a
-    // deserialized accessory with no handlers/getState — the Matter manager's own
-    // deserializer explicitly documents this: "handlers and getState are not restored
-    // from cache - plugins must provide these" (node_modules/homebridge/dist/matter/
-    // BaseMatterManager.js, deserializeMatterAccessory()). The live handlers only exist
-    // on the accessory just built by MatterFanBridge here. Registering it is also safe
-    // on restart specifically: AccessoryManager.registerAccessory() only throws
-    // "already registered" against the in-memory session `accessories` map, which is
-    // fresh per bridge process — the on-disk cache alone does not populate it — and it
-    // restores cached cluster state onto the newly-registered accessory via
-    // `restoreCachedState()` (node_modules/homebridge/dist/matter/server/
-    // AccessoryManager.js, registerAccessory(), lines ~33-40). Skipping this call is
-    // exactly what left Matter accessories inert after a restart.
-    this.log.info('Registering Matter fan:', device.name);
-    await this.api.matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-    this.matterAccessories.set(bridge.uuid, accessory);
   }
 
   /** Only run discovery if at least one device is missing an explicit address. */
@@ -207,32 +142,4 @@ export class HomebridgeVentairCeilingFan implements DynamicPlatformPlugin {
     this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
   }
 
-  /**
-   * Same as `removeStaleAccessories`, for devices that had Matter turned off or removed.
-   * `desiredMatterUUIDs` is computed by the caller from valid configuration alone — not
-   * from which devices' setup happened to succeed this run — so a transient setup
-   * failure on a still-configured Matter fan can never look "stale" here.
-   */
-  private async removeStaleMatterAccessories(desiredMatterUUIDs: string[]): Promise<void> {
-    if (!this.api.isMatterEnabled() || !this.api.matter) {
-      return;
-    }
-    const stale = [...this.matterAccessories.entries()]
-      .filter(([uuid]) => !desiredMatterUUIDs.includes(uuid))
-      .map(([, accessory]) => accessory);
-
-    if (stale.length === 0) {
-      return;
-    }
-
-    for (const accessory of stale) {
-      this.log.info('Removing Matter accessory no longer in config:', accessory.displayName);
-      this.matterAccessories.delete(accessory.UUID);
-    }
-    try {
-      await this.api.matter.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
-    } catch (error) {
-      this.log.warn('Removing stale Matter accessories failed:', error instanceof Error ? error.message : error);
-    }
-  }
 }

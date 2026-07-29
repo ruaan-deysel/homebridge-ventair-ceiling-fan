@@ -30,7 +30,6 @@ const { HomebridgeVentairCeilingFan } = await import('../src/platform.js');
 const { CeilingFanAccessory } = await import('../src/accessory.js');
 const { TuyapiDevice } = await import('../src/tuya/tuyapi.js');
 const { discover } = await import('../src/tuya/discovery.js');
-const { matterUuid } = await import('../src/matter.js');
 
 function harness() {
   const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), success: vi.fn(), log: vi.fn() };
@@ -69,24 +68,8 @@ function harness() {
     },
     registerPlatformAccessories: vi.fn(),
     unregisterPlatformAccessories: vi.fn(),
-    isMatterEnabled: () => false,
-    matter: undefined,
   };
   return { log, api, handlers };
-}
-
-function matterHarness() {
-  const base = harness();
-  const matter = {
-    deviceTypes: { Fan: 'FanDevice' },
-    clusterNames: { OnOff: 'onOff', FanControl: 'fanControl' },
-    registerPlatformAccessories: vi.fn().mockResolvedValue(undefined),
-    unregisterPlatformAccessories: vi.fn().mockResolvedValue(undefined),
-    updateAccessoryState: vi.fn().mockResolvedValue(undefined),
-  };
-  base.api.isMatterEnabled = () => true;
-  base.api.matter = matter;
-  return { ...base, matter };
 }
 
 const device = { id: 'a'.repeat(20), key: 'k'.repeat(16), name: 'Family Room Fan' };
@@ -242,126 +225,3 @@ describe('platform lifecycle', () => {
   });
 });
 
-describe('Matter', () => {
-  it('does not touch api.matter when exposeMatter is off', async () => {
-    const { log, api, handlers } = harness();
-    new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [device] } as never, api as never);
-    await handlers.didFinishLaunching?.();
-    await vi.waitFor(() => expect(api.registerPlatformAccessories).toHaveBeenCalled());
-    expect(api.isMatterEnabled).toBeDefined();
-  });
-
-  it('registers a Matter fan when exposeMatter is on and Matter is enabled', async () => {
-    const { log, api, handlers, matter } = matterHarness();
-    const matterDevice = { ...device, exposeMatter: true };
-    new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [matterDevice] } as never, api as never);
-    await handlers.didFinishLaunching?.();
-    await vi.waitFor(() => expect(matter.registerPlatformAccessories).toHaveBeenCalled());
-
-    const [pluginId, platformName, accessories] = matter.registerPlatformAccessories.mock.calls[0];
-    expect(pluginId).toBe('homebridge-ventair-ceiling-fan');
-    expect(platformName).toBe('HomebridgeVentairCeilingFan');
-    expect(accessories[0].deviceType).toBe('FanDevice');
-    expect(accessories[0].UUID).not.toBe(api.hap.uuid.generate(matterDevice.id));
-  });
-
-  it('never calls api.matter when exposeMatter is on but Matter is not enabled', async () => {
-    const { log, api, handlers } = harness();
-    const matterDevice = { ...device, exposeMatter: true };
-    new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [matterDevice] } as never, api as never);
-    await handlers.didFinishLaunching?.();
-    await vi.waitFor(() => expect(api.registerPlatformAccessories).toHaveBeenCalled());
-    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Matter'));
-  });
-
-  it('re-registers a Matter fan restored from the cache so live handlers attach after restart', async () => {
-    // Simulates a restart: configureMatterAccessory() (called by Homebridge before
-    // didFinishLaunching, restoring the on-disk cache) already populated
-    // matterAccessories with this UUID *before* discoverDevices() ever runs.
-    const { log, api, handlers, matter } = matterHarness();
-    const matterDevice = { ...device, exposeMatter: true };
-    const platform = new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [matterDevice] } as never, api as never);
-
-    const cachedFromDisk = { UUID: matterUuid(matterDevice.id), displayName: 'Family Room Fan (restored, no handlers)' };
-    platform.configureMatterAccessory(cachedFromDisk as never);
-
-    await handlers.didFinishLaunching?.();
-
-    // The cached-from-disk accessory has no live handlers (Homebridge's Matter cache
-    // never restores them) — registerPlatformAccessories must still be called with the
-    // freshly-built accessory so the transport/onDps handlers actually go live.
-    await vi.waitFor(() => expect(matter.registerPlatformAccessories).toHaveBeenCalled());
-  });
-
-  it('unregisters stale Matter accessories no longer in config', async () => {
-    const { log, api, handlers, matter } = matterHarness();
-    const platform = new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [device] } as never, api as never);
-
-    const staleMatter = { UUID: 'stale-matter-uuid', displayName: 'Removed Matter Fan' };
-    platform.configureMatterAccessory(staleMatter as never);
-
-    await handlers.didFinishLaunching?.();
-    await vi.waitFor(() => expect(matter.unregisterPlatformAccessories).toHaveBeenCalled());
-
-    const [, , removed] = matter.unregisterPlatformAccessories.mock.calls[0];
-    expect(removed).toEqual([staleMatter]);
-  });
-
-  it('preserves a cached Matter accessory when its setup fails this run, instead of treating it as removed from config', async () => {
-    // Regression guard: the desired-Matter-UUID set used for stale cleanup must be
-    // computed from valid CONFIG alone, before any setup is attempted — never from
-    // "which devices' registerMatter() happened to succeed this run". A transient
-    // failure (bridge not ready yet, one-off startup race, ...) on a still-configured,
-    // already-cached Matter fan must not make removeStaleMatterAccessories() treat its
-    // cached UUID as stale and unregister it — that destroys the user's cached Matter
-    // endpoint state over what is often just a one-off error.
-    const { log, api, handlers, matter } = matterHarness();
-    const matterDevice = { ...device, exposeMatter: true };
-    matter.registerPlatformAccessories.mockRejectedValueOnce(new Error('bridge not ready'));
-
-    const platform = new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [matterDevice] } as never, api as never);
-    const cachedFromDisk = { UUID: matterUuid(matterDevice.id), displayName: 'Cached Fan (restored from disk)' };
-    platform.configureMatterAccessory(cachedFromDisk as never);
-
-    await handlers.didFinishLaunching?.();
-    await vi.waitFor(() => expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Setup failed'), expect.anything()));
-
-    // The cached accessory must never have been classified as stale over a transient
-    // setup failure — removeStaleMatterAccessories() must not even reach the point of
-    // calling unregisterPlatformAccessories for it.
-    expect(matter.unregisterPlatformAccessories).not.toHaveBeenCalled();
-  });
-
-  it('keeps a cached Matter accessory whose config entry failed validation', async () => {
-    // The HAP stale path's sibling bug: a mistyped key drops the entry from the parsed
-    // list, so its Matter UUID looks undesired and the endpoint gets destroyed. An entry
-    // still present in config must keep its Matter accessory whether or not it parsed.
-    const { log, api, handlers, matter } = matterHarness();
-    const broken = { ...device, id: 'e'.repeat(20), name: 'Typo Matter Fan', key: 'too-short', exposeMatter: true };
-    const platform = new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [broken] } as never, api as never);
-
-    platform.configureMatterAccessory({ UUID: matterUuid(broken.id), displayName: 'Typo Matter Fan' } as never);
-
-    await handlers.didFinishLaunching?.();
-
-    expect(matter.unregisterPlatformAccessories).not.toHaveBeenCalled();
-  });
-
-  it('catches and logs a rejected Matter unregister instead of an unhandled rejection', async () => {
-    const { log, api, handlers, matter } = matterHarness();
-    matter.unregisterPlatformAccessories.mockRejectedValue(new Error('bridge unreachable'));
-    const platform = new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [device] } as never, api as never);
-
-    const staleMatter = { UUID: 'stale-matter-uuid', displayName: 'Removed Matter Fan' };
-    platform.configureMatterAccessory(staleMatter as never);
-
-    await handlers.didFinishLaunching?.();
-    await vi.waitFor(() => expect(matter.unregisterPlatformAccessories).toHaveBeenCalled());
-    expect(log.warn).toHaveBeenCalledWith(
-      expect.stringContaining('stale Matter'),
-      'bridge unreachable',
-    );
-    // The rejection did not propagate to the top-level discoverDevices().catch handler.
-    expect(log.error).not.toHaveBeenCalled();
-  });
-});
