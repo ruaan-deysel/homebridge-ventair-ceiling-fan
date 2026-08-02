@@ -1,6 +1,11 @@
-![Skyfan DC](readme/ceiling-fan.jpg)
-
 # Ventair Skyfan DC
+
+[![npm](https://img.shields.io/npm/v/homebridge-ventair-ceiling-fan/latest?label=latest)](https://www.npmjs.com/package/homebridge-ventair-ceiling-fan)
+[![GitHub release](https://img.shields.io/github/release/ruaan-deysel/homebridge-ventair-ceiling-fan.svg)](https://github.com/ruaan-deysel/homebridge-ventair-ceiling-fan/releases)
+[![npm](https://img.shields.io/npm/dt/homebridge-ventair-ceiling-fan)](https://www.npmjs.com/package/homebridge-ventair-ceiling-fan)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
+![Skyfan DC](readme/ceiling-fan.jpg)
 
 Control Ventair Skyfan DC ceiling fans from HomeKit, over your local network.
 
@@ -14,7 +19,7 @@ Control Ventair Skyfan DC ceiling fans from HomeKit, over your local network.
 ## Requirements
 
 | | |
-|---|---|
+| --- | --- |
 | Homebridge | 1.8.0 or later (2.x recommended) |
 | Node.js | `^22.12.0 \|\| ^24.0.0` |
 
