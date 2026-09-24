@@ -60,4 +60,16 @@ describe('FanStateManager', () => {
 
     expect(seen).toEqual([]);
   });
+
+  it('keeps remembered speed when failed-write rollback falls back to last confirmed state', async () => {
+    const { transport, manager } = makeManager();
+    manager.seedSpeedStep(3);
+    transport.emitDps({ [DP.power]: false, [DP.speed]: 0 });
+    vi.spyOn(transport, 'set').mockRejectedValue(new Error('write failed'));
+    vi.spyOn(transport, 'get').mockRejectedValue(new Error('read failed'));
+
+    await expect(manager.setPower(true)).rejects.toThrow('write failed');
+    expect(manager.state.power).toBe(false);
+    expect(manager.state.speedStep).toBe(3);
+  });
 });
