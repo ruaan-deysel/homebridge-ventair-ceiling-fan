@@ -154,7 +154,16 @@ describe('fan control', () => {
     new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
 
     // Trigger Active=on while the initial get() is still pending
+    const setSpy = vi.spyOn(transport, 'set');
     const activatePromise = handlers.get('Fanv2.Active')?.onSet?.(1);
+    let activationCompleted = false;
+    void activatePromise?.then(() => {
+      activationCompleted = true;
+    });
+    await Promise.resolve();
+    expect(activationCompleted).toBe(false);
+    expect(setSpy).not.toHaveBeenCalled();
+
     resolveInitialGet({ [DP.power]: false, [DP.speed]: 3 });
     await activatePromise;
 

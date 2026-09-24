@@ -221,6 +221,9 @@ export class FanStateManager {
     if (Object.keys(patch).length === 0) {
       return;
     }
+    // Inbound only: this is the device telling us what it holds, which is exactly what
+    // a failed write's reconciliation may need to fall back on.
+    Object.assign(this.lastConfirmed, patch);
     // Do not let a device report of step 0 replace a positive remembered speed step.
     if (patch.speedStep !== undefined && patch.speedStep <= 0 && this.state.speedStep > 0) {
       delete patch.speedStep;
@@ -228,9 +231,6 @@ export class FanStateManager {
     if (Object.keys(patch).length === 0) {
       return;
     }
-    // Inbound only: this is the device telling us what it holds, which is exactly what
-    // a failed write's reconciliation may need to fall back on.
-    Object.assign(this.lastConfirmed, patch);
     Object.assign(this.state, patch);
     this.recordSpeedStep(patch.speedStep);
     // Debug, not info — eight fans pushing state at info level floods the log.
