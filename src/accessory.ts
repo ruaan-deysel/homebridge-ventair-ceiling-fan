@@ -21,6 +21,9 @@ export class CeilingFanAccessory {
   ) {
     const { Characteristic, Service: S } = this.platform;
 
+    this.stateManager.seedSpeedStep(this.accessory.context.lastSpeedStep);
+    this.stateManager.onSpeedStepRemembered(step => this.rememberSpeedStep(step));
+
     this.accessory.getService(S.AccessoryInformation)
       ?.setCharacteristic(Characteristic.Manufacturer, 'Ventair')
       .setCharacteristic(Characteristic.Model, 'Skyfan DC')
@@ -38,7 +41,7 @@ export class CeilingFanAccessory {
     this.fan.getCharacteristic(Characteristic.RotationSpeed)
       .setProps({ minValue: 0, maxValue: 100, minStep: 20 })
       .onSet(v => this.setSpeed(v))
-      .onGet(() => this.read(() => (this.stateManager.state.power ? stepToPercent(this.stateManager.state.speedStep) : 0)));
+      .onGet(() => this.read(() => this.displayedSpeedPercent()));
 
     this.fan.getCharacteristic(Characteristic.RotationDirection)
       .onSet(v => this.setDirection(v))
@@ -128,6 +131,19 @@ export class CeilingFanAccessory {
     return fn();
   }
 
+  private displayedSpeedPercent(): number {
+    const step = this.stateManager.state.speedStep;
+    return step > 0 ? stepToPercent(step) : 0;
+  }
+
+  private rememberSpeedStep(step: number): void {
+    if (this.accessory.context.lastSpeedStep === step) {
+      return;
+    }
+    this.accessory.context.lastSpeedStep = step;
+    this.platform.api.updatePlatformAccessories?.([this.accessory]);
+  }
+
   private async setActive(value: CharacteristicValue): Promise<void> {
     const on = value === this.platform.Characteristic.Active.ACTIVE;
     await this.runWrite(() => this.stateManager.setPower(on));
@@ -164,7 +180,7 @@ export class CeilingFanAccessory {
     const state = this.stateManager.state;
     if (patch.power !== undefined || patch.speedStep !== undefined) {
       this.fan.updateCharacteristic(Characteristic.Active, state.power ? Characteristic.Active.ACTIVE : Characteristic.Active.INACTIVE);
-      this.fan.updateCharacteristic(Characteristic.RotationSpeed, state.power ? stepToPercent(state.speedStep) : 0);
+      this.fan.updateCharacteristic(Characteristic.RotationSpeed, this.displayedSpeedPercent());
     }
     if (patch.direction !== undefined) {
       this.fan.updateCharacteristic(
