@@ -5,14 +5,14 @@ import { CeilingFanAccessory } from '../src/accessory.js';
 
 // Minimal HAP doubles: record handlers so tests can invoke them directly.
 function harness(overrides: Record<string, unknown> = {}) {
-  const handlers = new Map<string, { onSet?: (v: unknown) => Promise<void>; onGet?: () => unknown }>();
+  const handlers = new Map<string, { onSet?: (v: unknown) => Promise<void>; onGet?: () => unknown; props?: Record<string, unknown> }>();
   const characteristic = (key: string) => {
     const entry = handlers.get(key) ?? {};
     handlers.set(key, entry);
     const chain = {
       onSet(fn: (v: unknown) => Promise<void>) { entry.onSet = fn; return chain; },
       onGet(fn: () => unknown) { entry.onGet = fn; return chain; },
-      setProps() { return chain; },
+      setProps(props: Record<string, unknown>) { entry.props = props; return chain; },
       updateValue() { return chain; },
     };
     return chain;
@@ -313,5 +313,46 @@ describe('accessory information', () => {
 
     const firmware = setChars.filter(([c]) => c === 'FirmwareRevision').map(([, v]) => v);
     expect(firmware).toContain(pkg.version);
+  });
+
+  it('exposes the Fanv2, Lightbulb, and Sleep Switch services and required characteristics with whole-step props', async () => {
+    const { platform, accessory, device, handlers } = harness({
+      hasLight: true,
+      exposeModeSwitches: true,
+    });
+    const transport = new FakeTuyaDevice();
+    await transport.connect();
+    new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
+
+    const serviceUUIDs = accessory.services.map(s => s.UUID);
+    expect(serviceUUIDs).toContain('Fanv2');
+    expect(serviceUUIDs).toContain('Lightbulb');
+    expect(serviceUUIDs).toContain('Switch');
+
+    const sleepSwitch = accessory.services.find(s => s.UUID === 'Switch');
+    expect(sleepSwitch?.subtype).toBe('sleep');
+
+    // Fanv2 characteristics
+    expect(handlers.get('Fanv2.Active')?.onGet).toBeTypeOf('function');
+    expect(handlers.get('Fanv2.Active')?.onSet).toBeTypeOf('function');
+    expect(handlers.get('Fanv2.RotationSpeed')?.onGet).toBeTypeOf('function');
+    expect(handlers.get('Fanv2.RotationSpeed')?.onSet).toBeTypeOf('function');
+    expect(handlers.get('Fanv2.RotationSpeed')?.props).toEqual({
+      minValue: 0,
+      maxValue: 100,
+      minStep: 20,
+    });
+    expect(handlers.get('Fanv2.RotationDirection')?.onGet).toBeTypeOf('function');
+    expect(handlers.get('Fanv2.RotationDirection')?.onSet).toBeTypeOf('function');
+
+    // Lightbulb characteristics
+    expect(handlers.get('Family Room Fan Light.On')?.onGet).toBeTypeOf('function');
+    expect(handlers.get('Family Room Fan Light.On')?.onSet).toBeTypeOf('function');
+    expect(handlers.get('Family Room Fan Light.Brightness')?.onGet).toBeTypeOf('function');
+    expect(handlers.get('Family Room Fan Light.Brightness')?.onSet).toBeTypeOf('function');
+
+    // Sleep Switch characteristic
+    expect(handlers.get('Sleep.On')?.onGet).toBeTypeOf('function');
+    expect(handlers.get('Sleep.On')?.onSet).toBeTypeOf('function');
   });
 });

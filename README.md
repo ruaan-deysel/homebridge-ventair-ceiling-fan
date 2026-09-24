@@ -45,6 +45,21 @@ To find a device ID and local key by hand, see
 > Home Assistant, `tuya-local` or another plugin is connected to a fan, this plugin cannot
 > also control it — and vice versa.
 
+## Matter support
+
+On Homebridge 2.x, when Matter is enabled on the main Homebridge bridge or on this plugin's child bridge, each configured fan is registered over Matter alongside HomeKit using a single shared state manager.
+
+- **How to enable:** Enable Matter on the Homebridge bridge or child bridge settings in the Homebridge UI, then pair the Matter bridge with your Matter controller (Apple Home, Google Home, Amazon Alexa, SmartThings, or Home Assistant) using its separate Matter setup code / QR code.
+- **No plugin configuration needed:** No per-device Matter toggle is required in the plugin config — Matter exposure follows the Homebridge bridge's Matter setting automatically.
+- **Device type mappings:**
+  - Fan → Matter `Fan` (`FanControl` + `OnOff` clusters, mapping the 5 speed steps to 20/40/60/80/100% and `Off`/`Low`/`Medium`/`High` fan modes)
+  - Optional Light (`hasLight`) → Composed Matter `DimmableLight` child endpoint (`OnOff` + `LevelControl` clusters)
+  - Optional Sleep switch (`exposeModeSwitches`) → Composed Matter `OnOffSwitch` child endpoint (`OnOff` cluster; on writes `Sleep`, off writes `Normal`)
+- **Known Matter limitations:**
+  - **Rotation direction:** Matter's `FanControl` cluster as exposed by Homebridge does not carry a forward/reverse rotation direction attribute, so direction remains HomeKit-only.
+  - **Sleep switch and `eco` mode:** As in HomeKit, the optional mode switch covers `Sleep` and `Normal` only; a fan placed into `eco` mode from the Smart Life app shows the Sleep switch off, and toggling it off writes `Normal`.
+  - **Light brightness:** Light support and its brightness scale remain [untested on hardware](#light-support); brightness values (0–100%) are mapped linearly to Matter's `LevelControl` lighting range (1–254).
+
 ## Light support
 
 `hasLight` is implemented but **untested**: no unit available during development had a

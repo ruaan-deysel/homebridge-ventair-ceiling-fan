@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-09-24
+
+### Added
+
+- Matter support on Homebridge 2.x bridges (`supports-matter`). When Matter is enabled on
+  the Homebridge bridge or child bridge (`api.isMatterEnabled()`), each configured fan is
+  registered via `api.matter` as a Matter `Fan` device alongside its HomeKit accessory,
+  with composed child endpoints for the optional `DimmableLight` (`hasLight`) and `Sleep`
+  `OnOffSwitch` (`exposeModeSwitches`). No separate plugin-level Matter toggle is needed.
+- Extracted `FanStateManager` (`src/state.ts`) as the single source of truth for `FanState`,
+  per-key optimistic-write versioning, `lastConfirmed` device state, and version-gated
+  rollback. Both `CeilingFanAccessory` (HAP) and `MatterFanBridge` (Matter) consume the
+  same `FanStateManager` instance per fan — the plugin deliberately does **not** maintain a
+  second optimistic-state path, preventing the HAP/Matter state-divergence defects that led
+  to the earlier 2.0.0 removal.
+
 ## [2.0.1] - 2026-07-29
 
 ### Fixed
