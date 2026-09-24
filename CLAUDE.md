@@ -24,9 +24,11 @@ into HomeKit.
 - `src/index.ts` — registers the platform with Homebridge.
 - `src/settings.ts` — `PLATFORM_NAME` (must match `pluginAlias` in `config.schema.json`) and `PLUGIN_NAME` (must match `name` in `package.json`).
 - `src/config.ts` — Zod schema for the platform config. A bad device entry costs that one fan, never the bridge, and **never** unregisters an accessory (that would irreversibly discard its rooms, scenes and automations).
-- `src/platform.ts` — reads `config.devices[]`, generates a HAP UUID from the Tuya device id, and constructs one `CeilingFanAccessory` per device (restoring cached accessories where present).
+- `src/platform.ts` — reads `config.devices[]`, generates a HAP UUID from the Tuya device id, and constructs one `FanStateManager`, `CeilingFanAccessory`, and (when `api.isMatterEnabled()` is true) `MatterFanBridge` per device.
 - `src/dps.ts` — the datapoint ↔ `FanState` translation, both directions. The only place DP numbers appear.
-- `src/accessory.ts` — HomeKit services and characteristic handlers, optimistic state with per-key versioning, and rollback that restores only device-confirmed values.
+- `src/state.ts` — `FanStateManager`, the single source of truth for `FanState`, per-key optimistic-write versioning, `lastConfirmed`, and version-gated rollback shared by HAP and Matter.
+- `src/accessory.ts` — HomeKit services and characteristic handlers consuming `FanStateManager`.
+- `src/matter.ts` — Matter device descriptors (`Fan`, optional `DimmableLight` part, optional `OnOffSwitch` Sleep part) and command/state handlers consuming `FanStateManager`.
 - `src/tuya/tuyapi.ts` — the transport: one `TuyAPI` connection per accessory, the reconnect supervisor, and the write/readback path. **Do not touch `verifyWrite`, `awaitEcho`, `writeOnce`, the echo-suppression window or the reconnect supervisor** without live-hardware verification; that code was tuned against real fans.
 - `src/tuya/discovery.ts` — UDP broadcast discovery (ports 6666/6667, published AES-ECB key).
 - `src/tuya/cloud.ts` — Tuya Cloud API client used only to fetch local keys, including the IPv4-preferring agent + alternate-family retry for tuya/tuya-homebridge#412.

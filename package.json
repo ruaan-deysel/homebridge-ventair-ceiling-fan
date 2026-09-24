@@ -2,7 +2,7 @@
   "private": false,
   "displayName": "Ventair Skyfan DC",
   "name": "homebridge-ventair-ceiling-fan",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "type": "module",
   "main": "dist/index.js",
   "description": "A Homebridge plugin for Ventair Skyfan DC ceiling fan",
@@ -29,6 +29,7 @@
   "keywords": [
     "homebridge-plugin",
     "supports-hap",
+    "supports-matter",
     "skyfandc",
     "ceiling",
     "fan",
