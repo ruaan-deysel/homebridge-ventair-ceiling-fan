@@ -171,11 +171,14 @@ export function buildMatterAccessory(
         },
         levelControl: {
           moveToLevel: ({ level }: { level: number }) => callbacks.setLightBrightness(matterLevelToPercent(level)),
-          moveToLevelWithOnOff: ({ level }: { level: number }) => (
-            level <= 0
-              ? callbacks.setLightPower(false)
-              : callbacks.setLightBrightness(matterLevelToPercent(level))
-          ),
+          moveToLevelWithOnOff: async ({ level }: { level: number }) => {
+            if (level <= MATTER_MIN_LIGHT_LEVEL) {
+              await callbacks.setLightPower(false);
+              return;
+            }
+            await callbacks.setLightBrightness(matterLevelToPercent(level));
+            await callbacks.setLightPower(true);
+          },
         },
       },
     });

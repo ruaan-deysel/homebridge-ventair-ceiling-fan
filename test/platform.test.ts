@@ -283,12 +283,12 @@ describe('Matter platform lifecycle', () => {
   });
 
   it('re-registers a cached Matter accessory on restart so live handlers are attached', async () => {
-    const { log, api, handlers, matter } = matterHarness();
+    const { log, api, matter } = matterHarness();
     const platform = new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [device] } as never, api as never);
     platform.configureMatterAccessory({ UUID: matterUuid(device.id), displayName: device.name } as never);
 
-    await handlers.didFinishLaunching?.();
-    await vi.waitFor(() => expect(matter.registerPlatformAccessories).toHaveBeenCalled());
+    await platform.discoverDevices();
+    expect(matter.registerPlatformAccessories).toHaveBeenCalled();
     expect(matter.unregisterPlatformAccessories).not.toHaveBeenCalled();
   });
 
@@ -305,25 +305,25 @@ describe('Matter platform lifecycle', () => {
   });
 
   it('keeps a cached Matter accessory whose config entry failed validation', async () => {
-    const { log, api, handlers, matter } = matterHarness();
+    const { log, api, matter } = matterHarness();
     const broken = { ...device, id: 'e'.repeat(20), name: 'Typo Matter Fan', key: 'too-short' };
     const platform = new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [broken] } as never, api as never);
 
     platform.configureMatterAccessory({ UUID: matterUuid(broken.id), displayName: 'Typo Matter Fan' } as never);
 
-    await handlers.didFinishLaunching?.();
+    await platform.discoverDevices();
     expect(matter.unregisterPlatformAccessories).not.toHaveBeenCalled();
   });
 
   it('keeps a cached Matter accessory when registerPlatformAccessories rejects transiently', async () => {
-    const { log, api, handlers, matter } = matterHarness();
+    const { log, api, matter } = matterHarness();
     matter.registerPlatformAccessories.mockRejectedValueOnce(new Error('bridge not ready'));
 
     const platform = new HomebridgeVentairCeilingFan(log as never, { platform: 'x', devices: [device] } as never, api as never);
     platform.configureMatterAccessory({ UUID: matterUuid(device.id), displayName: device.name } as never);
 
-    await handlers.didFinishLaunching?.();
-    await vi.waitFor(() => expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Setup failed'), expect.anything()));
+    await platform.discoverDevices();
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Setup failed'), expect.anything());
     expect(matter.unregisterPlatformAccessories).not.toHaveBeenCalled();
   });
 

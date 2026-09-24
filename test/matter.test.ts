@@ -153,6 +153,13 @@ describe('MatterFanBridge and shared FanStateManager', () => {
     await lightPart?.handlers?.levelControl?.moveToLevel?.({ level: 254 } as never);
     expect(transport.state[DP.lightBrightness]).toBe(100);
 
+    await lightPart?.handlers?.levelControl?.moveToLevelWithOnOff?.({ level: 1 } as never);
+    expect(transport.state[DP.lightPower]).toBe(false);
+
+    await lightPart?.handlers?.levelControl?.moveToLevelWithOnOff?.({ level: percentToMatterLevel(50) } as never);
+    expect(transport.state[DP.lightBrightness]).toBe(50);
+    expect(transport.state[DP.lightPower]).toBe(true);
+
     const sleepPart = acc.parts?.find(p => p.id === 'sleep');
     await sleepPart?.handlers?.onOff?.on?.({});
     expect(transport.state[DP.mode]).toBe('Sleep');
