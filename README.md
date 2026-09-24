@@ -9,7 +9,7 @@
 
 Control Ventair Skyfan DC ceiling fans from HomeKit, over your local network.
 
-- On/off, speed (5 steps) and rotation direction
+- On/off, speed (5 steps) and rotation direction — remembers the last speed step across off/on cycles and Homebridge restarts, and shows it in HomeKit while the fan is off
 - Optional Sleep switch
 - Light on/off and brightness ([untested](#light-support))
 

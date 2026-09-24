@@ -50,7 +50,10 @@ function harness(overrides: Record<string, unknown> = {}) {
       RotationDirection: Object.assign('RotationDirection', { CLOCKWISE: 0, COUNTER_CLOCKWISE: 1 }),
       On: 'On', Brightness: 'Brightness',
     },
-    api: { hap: { HapStatusError: class extends Error {}, HAPStatus: { SERVICE_COMMUNICATION_FAILURE: -70402 } } },
+    api: {
+      hap: { HapStatusError: class extends Error {}, HAPStatus: { SERVICE_COMMUNICATION_FAILURE: -70402 } },
+      updatePlatformAccessories: vi.fn(),
+    },
   };
 
   const addService = vi.fn((t: string, name?: string, subtype?: string) => {
@@ -79,17 +82,22 @@ function harness(overrides: Record<string, unknown> = {}) {
 }
 
 describe('fan control', () => {
-  it('turning speed to 0 powers the fan off', async () => {
+  it('turning speed to 0 powers the fan off and retains the remembered speed percentage', async () => {
     const { platform, accessory, device, handlers } = harness();
     const transport = new FakeTuyaDevice();
     await transport.connect();
     new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
 
+    await handlers.get('Fanv2.RotationSpeed')?.onSet?.(60);
+    expect(handlers.get('Fanv2.RotationSpeed')?.onGet?.()).toBe(60);
+
     await handlers.get('Fanv2.RotationSpeed')?.onSet?.(0);
     expect(transport.state[DP.power]).toBe(false);
+    expect(handlers.get('Fanv2.Active')?.onGet?.()).toBe(0);
+    expect(handlers.get('Fanv2.RotationSpeed')?.onGet?.()).toBe(60);
   });
 
-  it('powering on from a stopped state restores step 1', async () => {
+  it('powering on from a stopped state restores step 1 when no speed is remembered', async () => {
     const { platform, accessory, device, handlers } = harness();
     const transport = new FakeTuyaDevice();
     await transport.connect();
@@ -98,6 +106,67 @@ describe('fan control', () => {
     await handlers.get('Fanv2.Active')?.onSet?.(1);
     expect(transport.state[DP.power]).toBe(true);
     expect(transport.state[DP.speed]).toBe(1);
+  });
+
+  it('powering on restores the pre-construction device speed step instead of step 1', async () => {
+    const { platform, accessory, device, handlers } = harness();
+    const transport = new FakeTuyaDevice();
+    transport.state = { [DP.power]: false, [DP.speed]: 2 };
+    await transport.connect();
+    new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
+
+    await handlers.get('Fanv2.Active')?.onSet?.(1);
+    expect(transport.state[DP.power]).toBe(true);
+    expect(transport.state[DP.speed]).toBe(2);
+    expect(accessory.context.lastSpeedStep).toBe(2);
+  });
+
+  it('restores the remembered speed from accessory.context when DP 3 is absent on restart', async () => {
+    const { platform, accessory, device, handlers } = harness();
+    accessory.context.lastSpeedStep = 4;
+    const transport = new FakeTuyaDevice();
+    transport.state = { [DP.power]: false };
+    await transport.connect();
+    new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
+
+    // RotationSpeed getter reports the remembered percentage even while Active=0
+    expect(handlers.get('Fanv2.Active')?.onGet?.()).toBe(0);
+    expect(handlers.get('Fanv2.RotationSpeed')?.onGet?.()).toBe(80);
+
+    await handlers.get('Fanv2.Active')?.onSet?.(1);
+    expect(transport.state[DP.power]).toBe(true);
+    expect(transport.state[DP.speed]).toBe(4);
+    // Persisted step was already 4, so updatePlatformAccessories is not called redundantly
+    expect(platform.api.updatePlatformAccessories).not.toHaveBeenCalled();
+  });
+
+  it('awaits a pending initial refresh before choosing the speed step on Active=on and ignores step 0 reports', async () => {
+    const { platform, accessory, device, handlers } = harness();
+    const transport = new FakeTuyaDevice();
+    await transport.connect();
+
+    let resolveInitialGet!: (dps: Record<string, number | boolean>) => void;
+    const deferredGet = new Promise<Record<string, number | boolean>>(resolve => {
+      resolveInitialGet = resolve;
+    });
+    vi.spyOn(transport, 'get').mockReturnValueOnce(deferredGet);
+
+    new CeilingFanAccessory(platform as never, accessory as never, device as never, transport);
+
+    // Trigger Active=on while the initial get() is still pending
+    const activatePromise = handlers.get('Fanv2.Active')?.onSet?.(1);
+    resolveInitialGet({ [DP.power]: false, [DP.speed]: 3 });
+    await activatePromise;
+
+    expect(transport.state[DP.power]).toBe(true);
+    expect(transport.state[DP.speed]).toBe(3);
+    expect(accessory.context.lastSpeedStep).toBe(3);
+    expect(platform.api.updatePlatformAccessories).toHaveBeenCalledTimes(1);
+
+    // A subsequent device report with step 0 while off must not erase the remembered step
+    transport.emitDps({ [DP.power]: false, [DP.speed]: 0 });
+    expect(handlers.get('Fanv2.Active')?.onGet?.()).toBe(0);
+    expect(handlers.get('Fanv2.RotationSpeed')?.onGet?.()).toBe(60);
   });
 
   it('throws while disconnected instead of reporting stale state', async () => {

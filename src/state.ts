@@ -52,6 +52,8 @@ export class FanStateManager {
   private readonly lastConfirmed: Partial<FanState> = {};
 
   private readonly listeners = new Set<StateChangeListener>();
+  private readonly speedStepListeners = new Set<(step: number) => void>();
+  private initialRefresh?: Promise<void>;
 
   constructor(
     private readonly device: Pick<VentairDevice, 'name'>,
@@ -59,12 +61,25 @@ export class FanStateManager {
     private readonly log: Pick<Logging, 'debug' | 'warn'>,
   ) {
     this.transport.onDps(dps => this.applyUpdate(dps));
-    this.transport.onConnected(() => void this.refresh());
+    this.transport.onConnected(() => {
+      const p = this.refresh();
+      this.initialRefresh ??= p;
+    });
     this.transport.onDisconnected(() => this.log.debug(`[${this.device.name}] disconnected`));
   }
 
   get connected(): boolean {
     return this.transport.connected;
+  }
+
+  /**
+   * Seed the initial speed step from persisted accessory context (`1..5`) when no
+   * speed step has been learned yet. Invalid or out-of-range values are ignored.
+   */
+  seedSpeedStep(step: unknown): void {
+    if (typeof step === 'number' && Number.isInteger(step) && step >= 1 && step <= 5 && this.state.speedStep === 0) {
+      this.state.speedStep = step;
+    }
   }
 
   onChange(listener: StateChangeListener): () => void {
@@ -74,10 +89,25 @@ export class FanStateManager {
     };
   }
 
+  onSpeedStepRemembered(listener: (step: number) => void): () => void {
+    this.speedStepListeners.add(listener);
+    return () => {
+      this.speedStepListeners.delete(listener);
+    };
+  }
+
   async setPower(on: boolean): Promise<void> {
     if (!on) {
       await this.write({ power: false });
       return;
+    }
+    if (!this.initialRefresh) {
+      // Allow a queued microtask `transport.connect()` (scheduled in `CeilingFanAccessory`)
+      // to start the initial `refresh()` before reading `state.speedStep`.
+      await Promise.resolve();
+    }
+    if (this.initialRefresh) {
+      await this.initialRefresh;
     }
     // Coming on from a standstill needs a speed, or the fan turns on and does nothing.
     const speedStep = this.state.speedStep > 0 ? this.state.speedStep : 1;
@@ -131,6 +161,7 @@ export class FanStateManager {
       this.log.warn(`[${this.device.name}] write failed:`, error instanceof Error ? error.message : error);
       throw error;
     }
+    this.recordSpeedStep(patch.speedStep);
     this.notify(patch);
   }
 
@@ -187,13 +218,37 @@ export class FanStateManager {
     if (Object.keys(patch).length === 0) {
       return;
     }
-    Object.assign(this.state, patch);
     // Inbound only: this is the device telling us what it holds, which is exactly what
     // a failed write's reconciliation may need to fall back on.
     Object.assign(this.lastConfirmed, patch);
+    // Do not let a device report of step 0 replace a positive remembered speed step.
+    if (patch.speedStep !== undefined && patch.speedStep <= 0 && this.state.speedStep > 0) {
+      delete patch.speedStep;
+    }
+    if (Object.keys(patch).length === 0) {
+      return;
+    }
+    Object.assign(this.state, patch);
+    this.recordSpeedStep(patch.speedStep);
     // Debug, not info — eight fans pushing state at info level floods the log.
     this.log.debug(`[${this.device.name}] update:`, JSON.stringify(patch));
     this.notify(patch);
+  }
+
+  private recordSpeedStep(step: number | undefined): void {
+    if (typeof step !== 'number' || !Number.isInteger(step) || step < 1 || step > 5) {
+      return;
+    }
+    for (const listener of this.speedStepListeners) {
+      try {
+        listener(step);
+      } catch (error) {
+        this.log.debug(
+          `[${this.device.name}] speedStep listener threw:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
   }
 
   private notify(patch: Partial<FanState>): void {

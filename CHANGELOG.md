@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1] - 2026-09-25
+
+### Fixed
+
+- Fans now remember their last non-zero speed step across off/on cycles and Homebridge
+  restarts (`accessory.context.lastSpeedStep`), wait for the bounded initial refresh before
+  selecting a speed on first activation, and report the remembered speed percentage in
+  HomeKit's `RotationSpeed` while the fan is off (`Active=0`) so the Apple Home app does not
+  send `100%` when turning the fan on (#18).
+
 ## [2.1.0] - 2026-09-24
 
 ### Added
