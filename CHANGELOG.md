@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Update repository URLs and documentation references to tinkerologie organization.
+
 ### Fixed
 
 ## [2.1.1] - 2026-09-24
@@ -54,6 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hardcoded string, which had been left at 2.0.0.
 
 ### Changed
+
+- Update repository URLs and documentation references to tinkerologie organization.
 
 - Log messages from the Tuya transport identify a fan by its configured name instead of
   its device id. The full id identifies real hardware and appeared in every warning, so
@@ -105,6 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Vitest test suite and GitHub Actions CI across Node 22 and 24.
 
 ### Changed
+
+- Update repository URLs and documentation references to tinkerologie organization.
 
 - **BREAKING:** Migrated to ESM. Homebridge v2 is ESM-only, and the previous CommonJS build
   could not load on it at all.
