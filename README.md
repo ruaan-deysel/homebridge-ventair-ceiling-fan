@@ -1,7 +1,7 @@
 # Ventair Skyfan DC
 
 [![npm](https://img.shields.io/npm/v/homebridge-ventair-ceiling-fan/latest?label=latest)](https://www.npmjs.com/package/homebridge-ventair-ceiling-fan)
-[![GitHub release](https://img.shields.io/github/release/ruaan-deysel/homebridge-ventair-ceiling-fan.svg)](https://github.com/ruaan-deysel/homebridge-ventair-ceiling-fan/releases)
+[![GitHub release](https://img.shields.io/github/release/ruaan-deysel/homebridge-ventair-ceiling-fan.svg)](https://github.com/tinkerologie/homebridge-ventair-ceiling-fan/releases)
 [![npm](https://img.shields.io/npm/dt/homebridge-ventair-ceiling-fan)](https://www.npmjs.com/package/homebridge-ventair-ceiling-fan)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
@@ -65,7 +65,7 @@ On Homebridge 2.x, when Matter is enabled on the main Homebridge bridge or on th
 `hasLight` is implemented but **untested**: no unit available during development had a
 light, so the brightness scale is unverified (some Tuya dimmers report 0–100, others
 0–1000). If you have a light-equipped Skyfan, please
-[open an issue](https://github.com/ruaan-deysel/homebridge-ventair-ceiling-fan/issues).
+[open an issue](https://github.com/tinkerologie/homebridge-ventair-ceiling-fan/issues).
 
 ## Upgrading from 1.x
 
