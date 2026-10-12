@@ -7,9 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # create the tag and the GitHub release
-  id-token: write # npm exchanges this for a short-lived publish credential
-
+  contents: read # jobs request only what they need
 jobs:
   release:
     name: Release
@@ -20,13 +18,12 @@ jobs:
         with:
           fetch-depth: 0 # needs full history so existing tags are visible
 
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
           registry-url: https://registry.npmjs.org
-          cache: npm
-
-      # Trusted publishing needs npm 11.5.1+; Node 24 ships an older npm.
+          package-manager-cache: false
       - run: npm install -g npm@latest
 
       - name: Read the version and decide whether there is anything to do
@@ -82,11 +79,12 @@ jobs:
         if: steps.check.outputs.publish == 'true'
         env:
           VERSION: ${{ steps.check.outputs.version }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "v$VERSION" -m "v$VERSION"
-          git push origin "v$VERSION"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "v$VERSION"
 
       - name: Create the GitHub release
         if: steps.check.outputs.publish == 'true'
@@ -101,3 +99,6 @@ jobs:
       - name: Publish to npm
         if: steps.check.outputs.publish == 'true'
         run: npm publish --provenance --access public
+    permissions:
+      contents: write # create the GitHub release and tag
+      id-token: write # trusted publishing (OIDC) to the package registry
