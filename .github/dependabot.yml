@@ -50,3 +50,7 @@ updates:
       # compiles and reliably fails CI until the code is adapted. Do it deliberately.
       - dependency-name: typescript
         update-types: [version-update:semver-major]
+      # @types/node should describe the oldest supported Node (engines: ^22.12.0); a newer
+      # major lets tsc accept APIs that do not exist on Node 22.
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
