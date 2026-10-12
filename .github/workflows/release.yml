@@ -28,7 +28,7 @@ jobs:
           node-version: 24.x
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
-      # Trusted publishing needs npm 11.5.1+; Node 24 ships an older npm.
+      # Trusted publishing needs npm 11.5.1+; install the latest npm instead of relying on the one bundled with Node.
       - run: npm install -g npm@latest
 
       - name: Read the version and decide whether there is anything to do
