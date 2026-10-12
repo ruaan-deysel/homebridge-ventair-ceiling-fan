@@ -1,17 +1,9 @@
-name: Publish
+name: Release
 
-# The whole release: tag, GitHub release, and npm publish, driven by ONE input —
-# the `version` field in package.json. Bump it on main and push; everything else follows.
-#
-# Deliberately one workflow rather than a release job that triggers a publish job:
-# a release created with GITHUB_TOKEN does not start another workflow run (GitHub
-# suppresses that to prevent recursion), so an `on: release` publish would silently
-# never fire. Keeping it in one file also satisfies npm Trusted Publishing, which is
-# bound to this exact filename and the `release` environment.
 on:
   push:
     branches: [main]
-    paths: ['package.json']
+    paths: [package.json]
   workflow_dispatch:
 
 permissions:
@@ -20,6 +12,7 @@ permissions:
 
 jobs:
   release:
+    name: Release
     runs-on: ubuntu-latest
     environment: release
     steps:
@@ -30,8 +23,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
-          registry-url: 'https://registry.npmjs.org'
-          cache: 'npm'
+          registry-url: https://registry.npmjs.org
+          cache: npm
 
       # Trusted publishing needs npm 11.5.1+; Node 24 ships an older npm.
       - run: npm install -g npm@latest
