@@ -8,22 +8,27 @@ on:
 
 permissions:
   contents: read # jobs request only what they need
+
 jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
     environment: release
+    permissions:
+      contents: write # create the GitHub release and tag
+      id-token: write # trusted publishing (OIDC) to the package registry
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # needs full history so existing tags are visible
-
           persist-credentials: false
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+      # Trusted publishing needs npm 11.5.1+; Node 24 ships an older npm.
       - run: npm install -g npm@latest
 
       - name: Read the version and decide whether there is anything to do
@@ -99,6 +104,3 @@ jobs:
       - name: Publish to npm
         if: steps.check.outputs.publish == 'true'
         run: npm publish --provenance --access public
-    permissions:
-      contents: write # create the GitHub release and tag
-      id-token: write # trusted publishing (OIDC) to the package registry
